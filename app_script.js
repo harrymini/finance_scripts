@@ -1,13 +1,14 @@
 /****************************************************
- * Global Liquidity Monitor v3.0 - 완전 통합 버전
- * 
+ * Global Liquidity Monitor v3.1 - 세밀한 점수 체계
+ *
  * 주요 기능:
  * 1. 미국 유동성 모니터링 (WALCL, TGA, ON RRP)
  * 2. 글로벌 유동성 추적 (중국 M2, BOJ, DXY)
  * 3. 신흥국 통화 모니터링
- * 4. 종합 유동성 점수 및 자동 알림
- * 5. 알림 설정/해제 기능
+ * 4. 종합 유동성 점수 (7단계 신호, 5단계 세분화)
+ * 5. 알림 설정/해제 기능 (±50, ±80 임계값)
  * 6. 히스토리 자동 누적 (History, Global_History, Alert_History)
+ * 7. 점수 계산 가이드 시트 자동 생성
  ****************************************************/
 
 const CONFIG = {
@@ -1333,6 +1334,303 @@ function createGlobalDashboard() {
 }
 
 /** ===============================================
+ * 점수 계산 가이드 시트 생성
+ * =============================================== */
+
+function createScoringGuide() {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const sheetName = 'Scoring_Guide';
+
+    // 기존 시트가 있으면 삭제
+    let guideSheet = ss.getSheetByName(sheetName);
+    if (guideSheet) {
+      ss.deleteSheet(guideSheet);
+    }
+
+    // 새 시트 생성
+    guideSheet = ss.insertSheet(sheetName);
+
+    // 현재 행 추적
+    let currentRow = 1;
+
+    // ============= 타이틀 =============
+    guideSheet.getRange(currentRow, 1, 1, 6).merge()
+      .setValue('📊 글로벌 유동성 점수 계산 가이드 v3.1')
+      .setFontSize(16)
+      .setFontWeight('bold')
+      .setBackground('#1f77b4')
+      .setFontColor('white')
+      .setHorizontalAlignment('center');
+    currentRow += 2;
+
+    // ============= 개요 =============
+    guideSheet.getRange(currentRow, 1, 1, 6).merge()
+      .setValue('📌 점수 계산 개요')
+      .setFontSize(12)
+      .setFontWeight('bold')
+      .setBackground('#d0e0f0');
+    currentRow++;
+
+    guideSheet.getRange(currentRow, 1, 1, 6).merge()
+      .setValue('총 5개 요인을 분석하여 -120점 ~ +105점 범위의 종합 점수를 산출합니다.')
+      .setWrap(true);
+    currentRow += 2;
+
+    // ============= 가중치 테이블 =============
+    guideSheet.getRange(currentRow, 1, 1, 4).setValues([['요인', '가중치', '최대점수', '설명']])
+      .setFontWeight('bold')
+      .setBackground('#e6e6e6');
+    currentRow++;
+
+    const weights = [
+      ['미국 요인 (WALCL + TGA + ON RRP)', '40%', '+40 / -45', 'Fed 자산, 재무부 계좌, 역레포'],
+      ['달러 요인 (DXY)', '20%', '+25 / -25', '달러 인덱스 주간 변화'],
+      ['중국 요인 (M2)', '20%', '+20 / -20', 'M2 통화 공급 성장률'],
+      ['일본 요인 (USD/JPY)', '10%', '+5 / -15', '엔화 환율 및 캐리 리스크'],
+      ['신흥국 요인 (EM Index)', '10%', '+15 / -15', '신흥국 통화 강세 지수']
+    ];
+
+    guideSheet.getRange(currentRow, 1, weights.length, 4).setValues(weights);
+    currentRow += weights.length + 2;
+
+    // ============= 미국 요인 (40%) =============
+    guideSheet.getRange(currentRow, 1, 1, 6).merge()
+      .setValue('🇺🇸 미국 요인 (40% 가중치)')
+      .setFontSize(12)
+      .setFontWeight('bold')
+      .setBackground('#d0e0f0');
+    currentRow++;
+
+    // 1. WALCL
+    guideSheet.getRange(currentRow, 1).setValue('1. WALCL (연준 자산) 주간 변화')
+      .setFontWeight('bold');
+    currentRow++;
+
+    const walclTable = [
+      ['구간', '점수', '의미', '시장 영향'],
+      ['> +500억$', '+20', '강한 확장 (QE 재개)', '🚀 Risk-ON'],
+      ['+100억 ~ +500억$', '+10', '완만한 확장', '✅ 긍정적'],
+      ['-100억 ~ +100억$', '0', '중립 (변화 없음)', '⚖️ 중립'],
+      ['-500억 ~ -100억$', '-10', '완만한 긴축 (QT)', '⚠️ 주의'],
+      ['< -500억$', '-20', '강한 긴축 (적극적 QT)', '🔴 Risk-OFF']
+    ];
+
+    guideSheet.getRange(currentRow, 1, walclTable.length, 4).setValues(walclTable);
+    guideSheet.getRange(currentRow, 1, 1, 4).setFontWeight('bold').setBackground('#f0f0f0');
+    currentRow += walclTable.length + 1;
+
+    // 2. TGA
+    guideSheet.getRange(currentRow, 1).setValue('2. TGA (재무부 계좌) 주간 변화')
+      .setFontWeight('bold');
+    currentRow++;
+
+    const tgaTable = [
+      ['구간', '점수', '의미', '시장 영향'],
+      ['< -1000억$', '+10', '대규모 지출 (유동성 공급)', '🚀 Risk-ON'],
+      ['-1000억 ~ -500억$', '+5', '중간 지출', '✅ 긍정적'],
+      ['-500억 ~ +500억$', '0', '중립', '⚖️ 중립'],
+      ['+500억 ~ +1000억$', '-5', '중간 축적 (채권 발행)', '⚠️ 주의'],
+      ['> +1000억$', '-10', '대규모 축적 (유동성 흡수)', '🔴 Risk-OFF']
+    ];
+
+    guideSheet.getRange(currentRow, 1, tgaTable.length, 4).setValues(tgaTable);
+    guideSheet.getRange(currentRow, 1, 1, 4).setFontWeight('bold').setBackground('#f0f0f0');
+    currentRow += tgaTable.length + 1;
+
+    // 3. ON RRP
+    guideSheet.getRange(currentRow, 1).setValue('3. ON RRP (Overnight Reverse Repo) 잔고')
+      .setFontWeight('bold');
+    currentRow++;
+
+    const rrpTable = [
+      ['구간', '점수', '의미', '시장 영향'],
+      ['< 1000억$', '+10', '완전 활용 (유동성 긴장)', '🚀 Risk-ON'],
+      ['1000억 ~ 2000억$', '+5', '적정 수준', '✅ 건강'],
+      ['2000억 ~ 3000억$', '0', '중립', '⚖️ 중립'],
+      ['3000억 ~ 5000억$', '-10', '과잉 유동성 (리스크)', '⚠️ 버블 위험'],
+      ['> 5000억$', '-15', '극도의 과잉', '🔴 시스템 리스크']
+    ];
+
+    guideSheet.getRange(currentRow, 1, rrpTable.length, 4).setValues(rrpTable);
+    guideSheet.getRange(currentRow, 1, 1, 4).setFontWeight('bold').setBackground('#f0f0f0');
+    currentRow += rrpTable.length + 2;
+
+    // ============= 달러 요인 (20%) =============
+    guideSheet.getRange(currentRow, 1, 1, 6).merge()
+      .setValue('💵 달러 요인 (20% 가중치)')
+      .setFontSize(12)
+      .setFontWeight('bold')
+      .setBackground('#d0e0f0');
+    currentRow++;
+
+    guideSheet.getRange(currentRow, 1).setValue('DXY (달러 인덱스) 주간 변화')
+      .setFontWeight('bold');
+    currentRow++;
+
+    const dxyTable = [
+      ['구간', '점수', '의미', '시장 영향'],
+      ['< -2.0 포인트', '+25', '급격한 달러 약세', '🚀🚀 강한 Risk-ON'],
+      ['-2.0 ~ -1.0', '+20', '달러 약세', '✅ Risk-ON'],
+      ['-1.0 ~ +1.0', '0', '중립', '⚖️ 중립'],
+      ['+1.0 ~ +2.0', '-20', '달러 강세', '⚠️ Risk-OFF'],
+      ['> +2.0 포인트', '-25', '급격한 달러 강세', '🔴🔴 강한 Risk-OFF']
+    ];
+
+    guideSheet.getRange(currentRow, 1, dxyTable.length, 4).setValues(dxyTable);
+    guideSheet.getRange(currentRow, 1, 1, 4).setFontWeight('bold').setBackground('#f0f0f0');
+    currentRow += dxyTable.length + 2;
+
+    // ============= 중국 요인 (20%) =============
+    guideSheet.getRange(currentRow, 1, 1, 6).merge()
+      .setValue('🇨🇳 중국 요인 (20% 가중치)')
+      .setFontSize(12)
+      .setFontWeight('bold')
+      .setBackground('#d0e0f0');
+    currentRow++;
+
+    guideSheet.getRange(currentRow, 1).setValue('M2 (광의통화) YoY 성장률')
+      .setFontWeight('bold');
+    currentRow++;
+
+    const chinaTable = [
+      ['구간', '점수', '의미', '시장 영향'],
+      ['> 12%', '+20', '과잉 확대 (부양 정책)', '🚀 강한 성장'],
+      ['10% ~ 12%', '+15', '적정 확대 (건강한 성장)', '✅ 긍정적'],
+      ['8% ~ 10%', '0', '중립 (정상 범위)', '⚖️ 중립'],
+      ['6% ~ 8%', '-10', '성장 둔화', '⚠️ 경기 약화'],
+      ['< 6%', '-20', '유동성 경색', '🔴 심각한 둔화']
+    ];
+
+    guideSheet.getRange(currentRow, 1, chinaTable.length, 4).setValues(chinaTable);
+    guideSheet.getRange(currentRow, 1, 1, 4).setFontWeight('bold').setBackground('#f0f0f0');
+    currentRow += chinaTable.length + 2;
+
+    // ============= 일본 요인 (10%) =============
+    guideSheet.getRange(currentRow, 1, 1, 6).merge()
+      .setValue('🇯🇵 일본 요인 (10% 가중치)')
+      .setFontSize(12)
+      .setFontWeight('bold')
+      .setBackground('#d0e0f0');
+    currentRow++;
+
+    guideSheet.getRange(currentRow, 1).setValue('USD/JPY 환율 수준')
+      .setFontWeight('bold');
+    currentRow++;
+
+    const japanTable = [
+      ['구간', '점수', '의미', '시장 영향'],
+      ['< 130', '+5', '언와인드 완료', '✅ 약한 호재'],
+      ['130 ~ 145', '0', '안정 범위', '⚖️ 중립'],
+      ['145 ~ 150', '-5', '주의 수준', '⚠️ 모니터링'],
+      ['150 ~ 155', '-10', '고위험 (캐리 리스크)', '🔴 주의'],
+      ['> 155', '-15', '극도의 캐리 리스크', '🔴🔴 언와인드 위험']
+    ];
+
+    guideSheet.getRange(currentRow, 1, japanTable.length, 4).setValues(japanTable);
+    guideSheet.getRange(currentRow, 1, 1, 4).setFontWeight('bold').setBackground('#f0f0f0');
+    currentRow += japanTable.length + 2;
+
+    // ============= 신흥국 요인 (10%) =============
+    guideSheet.getRange(currentRow, 1, 1, 6).merge()
+      .setValue('🌏 신흥국 요인 (10% 가중치)')
+      .setFontSize(12)
+      .setFontWeight('bold')
+      .setBackground('#d0e0f0');
+    currentRow++;
+
+    guideSheet.getRange(currentRow, 1).setValue('EM 통화 강세 지수 (KRW, BRL, MXN 평균)')
+      .setFontWeight('bold');
+    currentRow++;
+
+    const emTable = [
+      ['구간', '점수', '의미', '시장 영향'],
+      ['> +2.0%', '+15', '강한 EM 강세', '🚀 Risk-ON'],
+      ['+1.0% ~ +2.0%', '+10', '완만한 EM 강세', '✅ 긍정적'],
+      ['-1.0% ~ +1.0%', '0', '중립', '⚖️ 중립'],
+      ['-2.0% ~ -1.0%', '-10', '완만한 EM 약세', '⚠️ 자금 유출'],
+      ['< -2.0%', '-15', '강한 EM 약세', '🔴 위기 조짐']
+    ];
+
+    guideSheet.getRange(currentRow, 1, emTable.length, 4).setValues(emTable);
+    guideSheet.getRange(currentRow, 1, 1, 4).setFontWeight('bold').setBackground('#f0f0f0');
+    currentRow += emTable.length + 2;
+
+    // ============= 최종 점수 해석 =============
+    guideSheet.getRange(currentRow, 1, 1, 6).merge()
+      .setValue('🎯 최종 점수 해석 (7단계)')
+      .setFontSize(12)
+      .setFontWeight('bold')
+      .setBackground('#d0e0f0');
+    currentRow++;
+
+    const signalTable = [
+      ['점수 범위', '신호', '투자 권장', '역사적 사례'],
+      ['80점 이상', '🚀🚀 슈퍼 유동성', '공격적 Risk-ON: 레버리지 ETF, 성장주, BTC', '2020년 3월 (코로나 QE)'],
+      ['50 ~ 80점', '🚀 극도의 유동성', '적극적 Risk-ON: 성장주, 신흥국, 원자재', '2024년 4월 랠리'],
+      ['20 ~ 50점', '✅ 높은 유동성', '위험자산 유지/확대, 밸류/그로스 균형', '2023년 하반기'],
+      ['-20 ~ +20점', '⚖️ 중립', '포트폴리오 균형 유지, 관망', '2024년 상반기'],
+      ['-50 ~ -20점', '⚠️ 긴축', '현금/채권 증대, 방어주 선호', '2022년 상반기 (금리인상)'],
+      ['-80 ~ -50점', '🔴 극도의 긴축', '방어적 포지션, 달러/금/국채', '2022년 10월 (바닥)'],
+      ['-80점 이하', '🔴🔴 위기 모드', '현금 확보, 손절 고려, 변동성 헤지', '2008년 9월 (리먼)']
+    ];
+
+    guideSheet.getRange(currentRow, 1, signalTable.length, 4).setValues(signalTable);
+    guideSheet.getRange(currentRow, 1, 1, 4).setFontWeight('bold').setBackground('#e6e6e6');
+
+    // 신호별 배경색
+    for (let i = 0; i < signalTable.length - 1; i++) {
+      const rowIdx = currentRow + i + 1;
+      if (i === 0) guideSheet.getRange(rowIdx, 1, 1, 4).setBackground('#00FF00'); // 슈퍼
+      else if (i === 1) guideSheet.getRange(rowIdx, 1, 1, 4).setBackground('#90EE90'); // 극도
+      else if (i === 2) guideSheet.getRange(rowIdx, 1, 1, 4).setBackground('#D4EDDA'); // 높음
+      else if (i === 3) guideSheet.getRange(rowIdx, 1, 1, 4).setBackground('#FFFFE0'); // 중립
+      else if (i === 4) guideSheet.getRange(rowIdx, 1, 1, 4).setBackground('#FFE4B5'); // 긴축
+      else if (i === 5) guideSheet.getRange(rowIdx, 1, 1, 4).setBackground('#FFB6C1'); // 극도긴축
+      else if (i === 6) guideSheet.getRange(rowIdx, 1, 1, 4).setBackground('#FF6B6B'); // 위기
+    }
+
+    currentRow += signalTable.length + 2;
+
+    // ============= 참고 사항 =============
+    guideSheet.getRange(currentRow, 1, 1, 6).merge()
+      .setValue('📝 참고 사항')
+      .setFontSize(12)
+      .setFontWeight('bold')
+      .setBackground('#d0e0f0');
+    currentRow++;
+
+    const notes = [
+      ['• 최대 가능 점수: +105점 (모든 요인 극도로 긍정적)'],
+      ['• 최소 가능 점수: -120점 (모든 요인 극도로 부정적)'],
+      ['• 실시간 업데이트: "📊 Global Liquidity" 메뉴 → "🔄 전체 업데이트"'],
+      ['• 알림 설정: "🔔 알림 설정/해제"에서 2시간마다 자동 체크 가능'],
+      ['• 히스토리 확인: Global_History 시트에서 과거 점수 추이 확인'],
+      ['• 문의 및 수정: v3.1 (2025-11-13) - 세밀한 5단계 로직 적용']
+    ];
+
+    guideSheet.getRange(currentRow, 1, notes.length, 6).setValues(notes.map(n => [n[0], '', '', '', '', '']));
+
+    // 열 너비 조정
+    guideSheet.setColumnWidth(1, 200);
+    guideSheet.setColumnWidth(2, 100);
+    guideSheet.setColumnWidth(3, 250);
+    guideSheet.setColumnWidth(4, 200);
+
+    // 시트를 맨 앞으로 이동
+    ss.setActiveSheet(guideSheet);
+    ss.moveActiveSheet(1);
+
+    SpreadsheetApp.getUi().alert('✅ 점수 계산 가이드 시트가 생성되었습니다!\n\n"Scoring_Guide" 시트를 확인하세요.');
+    Logger.log('✅ Scoring_Guide 시트 생성 완료');
+
+  } catch (e) {
+    Logger.log(`❌ 가이드 시트 생성 오류: ${e.message}`);
+    SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
+  }
+}
+
+/** ===============================================
  * 12) 메뉴 설정
  * =============================================== */
 
@@ -1353,6 +1651,7 @@ function onOpen() {
     .addItem('⏰ 일일 자동갱신', 'createDailyTrigger')
     .addSeparator()
     .addItem('📋 캐시 초기화', 'clearAllCache')
+    .addItem('📖 점수 계산 가이드', 'createScoringGuide')
     .addItem('❓ 도움말', 'showHelp')
     .addToUi();
 }
