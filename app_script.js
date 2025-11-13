@@ -438,47 +438,129 @@ function analyzeGlobalLiquidity() {
     // WoW 계산
     const walcl_wow = (walcl.value || 0) - (walcl_1w.value || 0);
     
-    // 종합 유동성 점수 계산
+    // 종합 유동성 점수 계산 (개선된 세밀한 로직)
     let liquidityScore = 0;
+
+    // === 미국 요인 (40%) ===
+
+    // 1. WALCL WoW (양방향 5단계 점수)
+    if (walcl_wow > 50000) {              // 500억 이상 증가
+      liquidityScore += 20;
+    } else if (walcl_wow > 10000) {       // 100억~500억 증가
+      liquidityScore += 10;
+    } else if (walcl_wow < -50000) {      // 500억 이상 감소 (강한 QT)
+      liquidityScore -= 20;
+    } else if (walcl_wow < -10000) {      // 100억~500억 감소
+      liquidityScore -= 10;
+    }
+    // -10B ~ +10B는 중립 (0점)
+
+    // 2. TGA 변화 (양방향 5단계 점수)
+    if (tga.week_change < -100000) {      // 1000억 이상 지출 (강한 유동성 공급)
+      liquidityScore += 10;
+    } else if (tga.week_change < -50000) { // 500억~1000억 지출
+      liquidityScore += 5;
+    } else if (tga.week_change > 100000) { // 1000억 이상 축적 (강한 유동성 흡수)
+      liquidityScore -= 10;
+    } else if (tga.week_change > 50000) {  // 500억~1000억 축적
+      liquidityScore -= 5;
+    }
+    // -50B ~ +50B는 중립 (0점)
+
+    // 3. ON RRP (5단계 점수)
+    if (onRrp.value > 500000) {           // 5000억 초과 = 극도의 과잉
+      liquidityScore -= 15;
+    } else if (onRrp.value > 300000) {    // 3000억~5000억 = 과잉 유동성 (리스크)
+      liquidityScore -= 10;
+    } else if (onRrp.value > 200000) {    // 2000억~3000억 = 중립
+      liquidityScore += 0;
+    } else if (onRrp.value > 100000) {    // 1000억~2000억 = 적정 활용
+      liquidityScore += 5;
+    } else {                               // 1000억 미만 = 완전 활용
+      liquidityScore += 10;
+    }
+
+    // === 달러 요인 (20%) ===
+
+    // DXY WoW (5단계 점수)
+    if (dxy_change < -2) {                // 2포인트 이상 하락 (Risk-ON)
+      liquidityScore += 25;
+    } else if (dxy_change < -1) {         // 1~2포인트 하락
+      liquidityScore += 20;
+    } else if (dxy_change > 2) {          // 2포인트 이상 상승 (Risk-OFF)
+      liquidityScore -= 25;
+    } else if (dxy_change > 1) {          // 1~2포인트 상승
+      liquidityScore -= 20;
+    }
+    // -1 ~ +1은 중립 (0점)
+
+    // === 중국 요인 (20%) ===
+
+    // M2 YoY (5단계 점수)
+    if (china.m2_growth > 12) {           // 12% 초과 = 과잉 확대
+      liquidityScore += 20;
+    } else if (china.m2_growth > 10) {    // 10~12% = 적정 확대
+      liquidityScore += 15;
+    } else if (china.m2_growth < 6) {     // 6% 미만 = 경색
+      liquidityScore -= 20;
+    } else if (china.m2_growth < 8) {     // 6~8% = 둔화
+      liquidityScore -= 10;
+    }
+    // 8~10%는 중립 (0점)
+
+    // === 일본 요인 (10%) ===
+
+    // USD/JPY (5단계 점수)
+    if (japan.usdjpy > 155) {             // 155 초과 = 극도의 캐리 리스크
+      liquidityScore -= 15;
+    } else if (japan.usdjpy > 150) {      // 150~155 = 고위험
+      liquidityScore -= 10;
+    } else if (japan.usdjpy > 145) {      // 145~150 = 주의
+      liquidityScore -= 5;
+    } else if (japan.usdjpy < 130) {      // 130 미만 = 언와인드 완료 (약한 호재)
+      liquidityScore += 5;
+    }
+    // 130~145는 안정 (0점)
+
+    // === 신흥국 요인 (10%) ===
+
+    // EM 강세 지수 (5단계 점수)
+    if (emFx.strength_index > 2) {        // 2 초과 = 강한 강세
+      liquidityScore += 15;
+    } else if (emFx.strength_index > 1) { // 1~2 = 약한 강세
+      liquidityScore += 10;
+    } else if (emFx.strength_index < -2) { // -2 미만 = 강한 약세
+      liquidityScore -= 15;
+    } else if (emFx.strength_index < -1) { // -2 ~ -1 = 약한 약세
+      liquidityScore -= 10;
+    }
+    // -1 ~ +1은 중립 (0점)
     
-    // 미국 요인 (40%)
-    if (walcl_wow > 0) liquidityScore += 20;
-    if (tga.week_change < -10000) liquidityScore += 10;
-    if (onRrp.value < 200000) liquidityScore += 10;
-    
-    // 달러 요인 (20%)
-    if (dxy_change < -1) liquidityScore += 20;
-    else if (dxy_change > 1) liquidityScore -= 20;
-    
-    // 중국 요인 (20%)
-    if (china.m2_growth > 10) liquidityScore += 20;
-    else if (china.m2_growth < 8) liquidityScore -= 10;
-    
-    // 일본 요인 (10%)
-    if (japan.usdjpy > 150) liquidityScore -= 10;
-    
-    // 신흥국 요인 (10%)
-    if (emFx.strength_index > 0) liquidityScore += 10;
-    
-    // 최종 신호 결정
+    // 최종 신호 결정 (7단계 확장 범위)
     let finalSignal = '';
     let recommendation = '';
-    
-    if (liquidityScore >= 60) {
+
+    if (liquidityScore >= 80) {
+      finalSignal = '🚀🚀 SUPER LIQUIDITY';
+      recommendation = '공격적 Risk-ON: 레버리지 ETF, 성장주, 비트코인, 신흥국 전면 확대';
+    } else if (liquidityScore >= 50) {
       finalSignal = '🚀 EXTREME LIQUIDITY';
-      recommendation = '성장주, 신흥국, 원자재 비중 확대';
-    } else if (liquidityScore >= 30) {
+      recommendation = '적극적 Risk-ON: 성장주, 신흥국, 원자재 비중 확대';
+    } else if (liquidityScore >= 20) {
       finalSignal = '✅ HIGH LIQUIDITY';
-      recommendation = '위험자산 비중 유지/확대';
-    } else if (liquidityScore >= 0) {
+      recommendation = '위험자산 비중 유지/확대, 밸류/그로스 균형';
+    } else if (liquidityScore >= -20) {
       finalSignal = '⚖️ NEUTRAL';
-      recommendation = '포트폴리오 균형 유지';
-    } else if (liquidityScore >= -30) {
+      recommendation = '포트폴리오 균형 유지, 관망';
+    } else if (liquidityScore >= -50) {
       finalSignal = '⚠️ TIGHT';
-      recommendation = '현금/채권 비중 증대';
-    } else {
+      recommendation = '현금/채권 비중 증대, 방어주 선호';
+    } else if (liquidityScore >= -80) {
       finalSignal = '🔴 EXTREME TIGHT';
-      recommendation = '방어적 포지션, 달러/금 선호';
+      recommendation = '방어적 포지션, 달러/금/국채 선호';
+    } else {
+      finalSignal = '🔴🔴 CRISIS MODE';
+      recommendation = '현금 확보, 손절 고려, 변동성 헤지 필수';
     }
     
     // Global_Liquidity 시트 업데이트
@@ -509,14 +591,22 @@ function analyzeGlobalLiquidity() {
     // 추천사항 업데이트
     globalSheet.getRange('T2').setValue(recommendation);
     
-    // 조건부 서식
+    // 조건부 서식 (7단계)
     const signalCell = globalSheet.getRange('S2');
-    if (liquidityScore >= 30) {
-      signalCell.setBackground('#90EE90');
-    } else if (liquidityScore >= 0) {
-      signalCell.setBackground('#FFFFE0');
+    if (liquidityScore >= 80) {
+      signalCell.setBackground('#00FF00').setFontWeight('bold');  // 밝은 초록 (슈퍼)
+    } else if (liquidityScore >= 50) {
+      signalCell.setBackground('#90EE90');  // 연한 초록 (극도)
+    } else if (liquidityScore >= 20) {
+      signalCell.setBackground('#D4EDDA');  // 매우 연한 초록 (높음)
+    } else if (liquidityScore >= -20) {
+      signalCell.setBackground('#FFFFE0');  // 노랑 (중립)
+    } else if (liquidityScore >= -50) {
+      signalCell.setBackground('#FFE4B5');  // 주황 (긴축)
+    } else if (liquidityScore >= -80) {
+      signalCell.setBackground('#FFB6C1');  // 분홍 (극도 긴축)
     } else {
-      signalCell.setBackground('#FFB6C1');
+      signalCell.setBackground('#FF6B6B').setFontWeight('bold');  // 빨강 (위기)
     }
     
     Logger.log(`✅ 글로벌 유동성 분석 완료: Score ${liquidityScore}, ${finalSignal}`);
@@ -891,17 +981,29 @@ function checkGlobalAlerts() {
     const analysis = analyzeGlobalLiquidity();
     const alerts = [];
     
-    // 극단적 신호
-    if (analysis.score >= 60) {
+    // 극단적 신호 (업데이트된 기준)
+    if (analysis.score >= 80) {
       alerts.push({
-        level: '🚀 OPPORTUNITY',
-        message: '글로벌 유동성 급증',
+        level: '🚀🚀 SUPER OPPORTUNITY',
+        message: '슈퍼 유동성 폭발 - 역사적 기회',
         action: analysis.recommendation
       });
-    } else if (analysis.score <= -30) {
+    } else if (analysis.score >= 50) {
       alerts.push({
-        level: '🔴 WARNING',
-        message: '글로벌 유동성 급감',
+        level: '🚀 EXTREME OPPORTUNITY',
+        message: '극도의 유동성 급증',
+        action: analysis.recommendation
+      });
+    } else if (analysis.score <= -80) {
+      alerts.push({
+        level: '🔴🔴 CRISIS ALERT',
+        message: '위기 수준 유동성 경색',
+        action: analysis.recommendation
+      });
+    } else if (analysis.score <= -50) {
+      alerts.push({
+        level: '🔴 EXTREME WARNING',
+        message: '극도의 유동성 급감',
         action: analysis.recommendation
       });
     }
@@ -1158,7 +1260,7 @@ function createGlobalDashboard() {
       
       <div class="section">
         <h3>종합 점수</h3>
-        <div class="score ${analysis.score >= 30 ? 'positive' : analysis.score <= -30 ? 'negative' : 'neutral'}">
+        <div class="score ${analysis.score >= 20 ? 'positive' : analysis.score <= -20 ? 'negative' : 'neutral'}">
           ${analysis.score} / 100
         </div>
         <div class="signal">${analysis.signal}</div>
@@ -1308,13 +1410,15 @@ function showHelp() {
       <li><strong>Alert_History:</strong> 발생한 알림 전체 기록</li>
     </ul>
     
-    <h3>유동성 점수</h3>
+    <h3>유동성 점수 (7단계)</h3>
     <ul>
-      <li><strong>60점 이상:</strong> 극도의 유동성 (Risk-ON)</li>
-      <li><strong>30-60점:</strong> 높은 유동성</li>
-      <li><strong>0-30점:</strong> 중립</li>
-      <li><strong>-30-0점:</strong> 긴축</li>
-      <li><strong>-30점 이하:</strong> 극도의 긴축 (Risk-OFF)</li>
+      <li><strong>80점 이상:</strong> 🚀🚀 슈퍼 유동성 (공격적 Risk-ON)</li>
+      <li><strong>50-80점:</strong> 🚀 극도의 유동성 (적극적 Risk-ON)</li>
+      <li><strong>20-50점:</strong> ✅ 높은 유동성 (위험자산 선호)</li>
+      <li><strong>-20~20점:</strong> ⚖️ 중립 (관망)</li>
+      <li><strong>-50~-20점:</strong> ⚠️ 긴축 (방어주 선호)</li>
+      <li><strong>-80~-50점:</strong> 🔴 극도의 긴축 (Risk-OFF)</li>
+      <li><strong>-80점 이하:</strong> 🔴🔴 위기 모드 (현금 확보)</li>
     </ul>
     
     <h3>가중치</h3>

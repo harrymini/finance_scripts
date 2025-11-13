@@ -129,38 +129,83 @@ CONFIG = {
 
 ## Liquidity Scoring Algorithm
 
-### Composite Score Calculation (lines 442-462)
+### Composite Score Calculation (lines 442-537) - **UPDATED v3.1**
 
 **Initialization**: `liquidityScore = 0`
 
-**US Factors (40% weight)**:
-- WALCL WoW increasing: +20
-- TGA decreasing >$10B: +10
-- ON RRP < $200B: +10
+#### **US Factors (40% weight)** - 5-level granular scoring
 
-**Dollar Factors (20% weight)**:
-- DXY WoW < -1: +20
-- DXY WoW > +1: -20
+**1. WALCL WoW (Weekly Change)**:
+- \> +50B: **+20** (Strong expansion)
+- +10B to +50B: **+10** (Moderate expansion)
+- -10B to +10B: **0** (Neutral)
+- -50B to -10B: **-10** (Moderate QT)
+- < -50B: **-20** (Strong QT)
 
-**China Factors (20% weight)**:
-- M2 growth > 10%: +20
-- M2 growth < 8%: -10
+**2. TGA Weekly Change**:
+- < -100B: **+10** (Strong liquidity injection)
+- -100B to -50B: **+5** (Moderate injection)
+- -50B to +50B: **0** (Neutral)
+- +50B to +100B: **-5** (Moderate drain)
+- \> +100B: **-10** (Strong drain)
 
-**Japan Factors (10% weight)**:
-- USD/JPY > 150: -10 (carry trade risk)
+**3. ON RRP (Overnight Reverse Repo)**:
+- < 100B: **+10** (Fully deployed)
+- 100B to 200B: **+5** (Healthy usage)
+- 200B to 300B: **0** (Neutral)
+- 300B to 500B: **-10** (Excess liquidity risk)
+- \> 500B: **-15** (Extreme excess)
 
-**EM Factors (10% weight)**:
-- EM strength index > 0: +10
+#### **Dollar Factors (20% weight)**
 
-### Score Interpretation (lines 467-482)
+**DXY Weekly Change**:
+- < -2: **+25** (Sharp decline, Risk-ON)
+- -2 to -1: **+20** (Decline)
+- -1 to +1: **0** (Neutral)
+- +1 to +2: **-20** (Rise)
+- \> +2: **-25** (Sharp rise, Risk-OFF)
 
-| Score Range | Signal | Recommendation |
-|------------|--------|----------------|
-| ≥ 60 | 🚀 EXTREME LIQUIDITY | Growth stocks, EM, commodities |
-| 30-59 | ✅ HIGH LIQUIDITY | Maintain/increase risk assets |
-| 0-29 | ⚖️ NEUTRAL | Balanced portfolio |
-| -29 to -1 | ⚠️ TIGHT | Increase cash/bonds |
-| ≤ -30 | 🔴 EXTREME TIGHT | Defensive, prefer USD/gold |
+#### **China Factors (20% weight)**
+
+**M2 YoY Growth**:
+- \> 12%: **+20** (Excessive expansion)
+- 10% to 12%: **+15** (Healthy expansion)
+- 8% to 10%: **0** (Neutral)
+- 6% to 8%: **-10** (Slowdown)
+- < 6%: **-20** (Contraction)
+
+#### **Japan Factors (10% weight)**
+
+**USD/JPY Level**:
+- < 130: **+5** (Unwind complete, mild positive)
+- 130 to 145: **0** (Stable)
+- 145 to 150: **-5** (Caution)
+- 150 to 155: **-10** (High risk)
+- \> 155: **-15** (Extreme carry risk)
+
+#### **EM Factors (10% weight)**
+
+**EM Currency Strength Index**:
+- \> +2: **+15** (Strong strength)
+- +1 to +2: **+10** (Moderate strength)
+- -1 to +1: **0** (Neutral)
+- -2 to -1: **-10** (Moderate weakness)
+- < -2: **-15** (Strong weakness)
+
+### Score Interpretation (lines 543-564) - **7-Level System**
+
+| Score Range | Signal | Recommendation | Historical Example |
+|------------|--------|----------------|-------------------|
+| ≥ 80 | 🚀🚀 SUPER LIQUIDITY | Aggressive Risk-ON: Leverage ETFs, growth stocks, Bitcoin, EM | 2020 March (COVID QE) |
+| 50-79 | 🚀 EXTREME LIQUIDITY | Active Risk-ON: Growth stocks, EM, commodities | 2024 April rally |
+| 20-49 | ✅ HIGH LIQUIDITY | Maintain/increase risk assets, Value/Growth balance | 2023 H2 |
+| -19 to +19 | ⚖️ NEUTRAL | Balanced portfolio, wait-and-see | 2024 H1 |
+| -49 to -20 | ⚠️ TIGHT | Increase cash/bonds, defensive stocks | 2022 H1 (rate hikes) |
+| -79 to -50 | 🔴 EXTREME TIGHT | Defensive position, USD/Gold/Treasuries | 2022 Oct (bottom) |
+| ≤ -80 | 🔴🔴 CRISIS MODE | Cash preservation, cut losses, hedge volatility | 2008 Sept (Lehman) |
+
+**Maximum Possible Score**: +105 (all factors extremely positive)
+**Minimum Possible Score**: -120 (all factors extremely negative)
 
 ---
 
@@ -587,7 +632,15 @@ checkGlobalAlerts()
 
 ## Version History
 
-**v3.0** (Current)
+**v3.1** (Current - 2025-11-13)
+- **MAJOR UPDATE**: Granular 5-level scoring for all factors
+- **ENHANCED**: 7-level signal system (±80, ±50, ±20 thresholds)
+- **IMPROVED**: ON RRP now 5-level (excess liquidity as risk)
+- **REFINED**: Alert thresholds updated to ±50, ±80
+- **ADDED**: Historical examples for each score range
+- More precise liquidity detection and market condition analysis
+
+**v3.0** (2025-11-13)
 - Complete integration of US and global liquidity
 - Automated history logging (3 sheets)
 - Alert system with email notifications
@@ -614,5 +667,5 @@ checkGlobalAlerts()
 ---
 
 **Last Updated**: 2025-11-13
-**Document Version**: 1.0
-**Code Version**: 3.0
+**Document Version**: 1.1
+**Code Version**: 3.1
