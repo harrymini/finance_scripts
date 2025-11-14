@@ -116,16 +116,16 @@ function getFredDataHistorical(fredId, daysAgo) {
       muteHttpExceptions: true,
       timeout: 15000
     });
-    
+
     if (response.getResponseCode() !== 200) {
       return { value: 0 };
     }
-    
+
     const csv = response.getContentText();
     const lines = csv.trim().split('\n');
-    
+
     const targetIndex = Math.max(lines.length - Math.ceil(daysAgo/5) - 1, 1);
-    
+
     if (targetIndex < lines.length) {
       const [date, value] = lines[targetIndex].split(',');
       return {
@@ -133,12 +133,63 @@ function getFredDataHistorical(fredId, daysAgo) {
         value: parseFloat(value.trim())
       };
     }
-    
+
     return { value: 0 };
-    
+
   } catch (e) {
     Logger.log(`❌ Historical 데이터 오류: ${e.message}`);
     return { value: 0 };
+  }
+}
+
+/**
+ * FRED에서 날짜 범위로 데이터 가져오기
+ * @param {string} fredId - FRED 시리즈 ID
+ * @param {Date} startDate - 시작 날짜
+ * @returns {Object} 날짜를 키로 하는 데이터 맵
+ */
+function getFredDataRange(fredId, startDate) {
+  try {
+    const url = `${CONFIG.FRED_BASE}?id=${fredId}`;
+    const response = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      timeout: 15000
+    });
+
+    if (response.getResponseCode() !== 200) {
+      Logger.log(`❌ FRED API 오류 [${fredId}]: ${response.getResponseCode()}`);
+      return {};
+    }
+
+    const csv = response.getContentText();
+    const lines = csv.trim().split('\n');
+
+    if (lines.length < 2) {
+      Logger.log(`❌ FRED 데이터가 없음 [${fredId}]`);
+      return {};
+    }
+
+    const dataMap = {};
+    const startDateStr = Utilities.formatDate(startDate, 'GMT', 'yyyy-MM-dd');
+
+    // 첫 번째 줄은 헤더이므로 건너뛰기
+    for (let i = 1; i < lines.length; i++) {
+      const [dateStr, valueStr] = lines[i].split(',');
+      const date = dateStr.trim();
+      const value = valueStr.trim();
+
+      // 시작 날짜 이후 데이터만 포함
+      if (date >= startDateStr && value !== '.' && value !== '') {
+        dataMap[date] = parseFloat(value);
+      }
+    }
+
+    Logger.log(`✅ ${fredId}: ${Object.keys(dataMap).length}개 데이터 포인트 로드됨`);
+    return dataMap;
+
+  } catch (e) {
+    Logger.log(`❌ FRED Range 데이터 오류 [${fredId}]: ${e.message}`);
+    return {};
   }
 }
 
@@ -715,6 +766,391 @@ function logGlobalHistory(analysis) {
     
   } catch (e) {
     Logger.log(`❌ Global_History 기록 오류: ${e.message}`);
+  }
+}
+
+/** ===============================================
+ * 7-B) History 시트 일괄 업데이트 (올해 1월부터)
+ * =============================================== */
+
+/**
+ * 가장 가까운 이전 날짜의 값을 찾는 헬퍼 함수
+ * @param {Object} dataMap - 날짜:값 맵
+ * @param {string} targetDate - 찾고자 하는 날짜
+ * @returns {number} 값 또는 0
+ */
+function getClosestValue(dataMap, targetDate) {
+  if (dataMap[targetDate] !== undefined) {
+    return dataMap[targetDate];
+  }
+
+  // 이전 날짜들 중 가장 가까운 날짜 찾기
+  const dates = Object.keys(dataMap).sort();
+  for (let i = dates.length - 1; i >= 0; i--) {
+    if (dates[i] <= targetDate) {
+      return dataMap[dates[i]];
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * History 시트를 올해 1월부터 현재까지 데이터로 채우기
+ */
+function populateHistoryFromJanuary() {
+  try {
+    const ui = SpreadsheetApp.getUi();
+    const result = ui.alert(
+      'History 데이터 업데이트',
+      '올해 1월 1일부터 현재까지 데이터를 History 시트에 추가합니다.\n\n계속하시겠습니까?',
+      ui.ButtonSet.YES_NO
+    );
+
+    if (result !== ui.Button.YES) {
+      return;
+    }
+
+    Logger.log('=== History 시트 일괄 업데이트 시작 ===');
+
+    const ss = SpreadsheetApp.getActive();
+    let historySheet = ss.getSheetByName(CONFIG.HISTORY_SHEET);
+
+    // History 시트가 없으면 생성
+    if (!historySheet) {
+      historySheet = ss.insertSheet(CONFIG.HISTORY_SHEET);
+      historySheet.appendRow([
+        '타임스탬프', '날짜', 'SOFR', 'EFFR', 'IORB', 'SOFR-IORB(bp)',
+        'ON RRP', 'TGA', 'WALCL', 'WoW', 'SRF', '신호'
+      ]);
+      historySheet.getRange(1, 1, 1, 12).setFontWeight('bold')
+        .setBackground('#1f77b4')
+        .setFontColor('white');
+      historySheet.setFrozenRows(1);
+      historySheet.setColumnWidth(1, 150);
+    }
+
+    // 올해 1월 1일
+    const startDate = new Date('2025-01-01');
+
+    // 모든 지표의 데이터 가져오기
+    Logger.log('📥 FRED 데이터 수집 중...');
+    const walclData = getFredDataRange(CONFIG.FRED_IDS.WALCL, startDate);
+    const sofrData = getFredDataRange(CONFIG.FRED_IDS.SOFR, startDate);
+    const effrData = getFredDataRange(CONFIG.FRED_IDS.EFFR, startDate);
+    const iorbData = getFredDataRange(CONFIG.FRED_IDS.IORB, startDate);
+    const onRrpData = getFredDataRange(CONFIG.FRED_IDS.ON_RRP, startDate);
+    const tgaData = getFredDataRange(CONFIG.FRED_IDS.TGA, startDate);
+
+    // WALCL을 기준으로 날짜 목록 생성 (주간 데이터)
+    const walclDates = Object.keys(walclData).sort();
+
+    if (walclDates.length === 0) {
+      ui.alert('❌ WALCL 데이터를 찾을 수 없습니다.');
+      return;
+    }
+
+    Logger.log(`📊 ${walclDates.length}개 주간 데이터 포인트 처리 중...`);
+
+    // 각 날짜별로 데이터 행 생성
+    const rows = [];
+    for (let i = 0; i < walclDates.length; i++) {
+      const date = walclDates[i];
+      const walcl = walclData[date];
+
+      // WoW 계산 (이전 주 데이터와 비교)
+      const walcl_prev = i > 0 ? walclData[walclDates[i-1]] : walcl;
+      const wow = walcl - walcl_prev;
+
+      // 각 지표의 가장 가까운 값 찾기
+      const sofr = getClosestValue(sofrData, date);
+      const effr = getClosestValue(effrData, date);
+      const iorb = getClosestValue(iorbData, date);
+      const onRrp = getClosestValue(onRrpData, date);
+      const tga = getClosestValue(tgaData, date);
+
+      // SOFR-IORB 스프레드 (bp)
+      const sofr_iorb = (sofr - iorb) * 100;
+
+      // 신호 판단
+      const signal = determineSignal(sofr_iorb, onRrp, wow, walcl);
+
+      // SRF는 historical 데이터가 없으므로 0으로 설정
+      const srf = 0;
+
+      // 타임스탬프는 해당 날짜의 자정으로 설정
+      const timestamp = new Date(date);
+
+      rows.push([
+        timestamp,
+        date,
+        sofr,
+        effr,
+        iorb,
+        sofr_iorb,
+        onRrp,
+        tga,
+        walcl,
+        wow,
+        srf,
+        signal
+      ]);
+    }
+
+    // History 시트에 모든 행 추가
+    if (rows.length > 0) {
+      historySheet.getRange(historySheet.getLastRow() + 1, 1, rows.length, 12).setValues(rows);
+      Logger.log(`✅ ${rows.length}개 행이 History 시트에 추가됨`);
+
+      ui.alert(
+        '✅ 완료',
+        `${rows.length}개 데이터 포인트가 History 시트에 추가되었습니다.\n\n기간: ${walclDates[0]} ~ ${walclDates[walclDates.length-1]}`,
+        ui.ButtonSet.OK
+      );
+    }
+
+    Logger.log('=== History 시트 업데이트 완료 ===');
+
+  } catch (e) {
+    Logger.log(`❌ History 업데이트 오류: ${e.message}`);
+    SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
+  }
+}
+
+/**
+ * Global_History 시트를 올해 1월부터 현재까지 데이터로 채우기
+ */
+function populateGlobalHistoryFromJanuary() {
+  try {
+    const ui = SpreadsheetApp.getUi();
+    const result = ui.alert(
+      'Global History 데이터 업데이트',
+      '올해 1월 1일부터 현재까지 데이터를 Global_History 시트에 추가합니다.\n\n⚠️ 이 작업은 시간이 걸릴 수 있습니다.\n\n계속하시겠습니까?',
+      ui.ButtonSet.YES_NO
+    );
+
+    if (result !== ui.Button.YES) {
+      return;
+    }
+
+    Logger.log('=== Global_History 시트 일괄 업데이트 시작 ===');
+
+    const ss = SpreadsheetApp.getActive();
+    let globalHistorySheet = ss.getSheetByName(CONFIG.GLOBAL_HISTORY_SHEET);
+
+    // Global_History 시트가 없으면 생성
+    if (!globalHistorySheet) {
+      globalHistorySheet = ss.insertSheet(CONFIG.GLOBAL_HISTORY_SHEET);
+      globalHistorySheet.appendRow([
+        '타임스탬프',
+        'WALCL(M$)', 'WALCL WoW',
+        'TGA(M$)', 'TGA WoW',
+        'ON RRP(M$)',
+        'DXY', 'DXY WoW',
+        '중국 M2(%)', '중국 신용', '중국 FX',
+        'USD/JPY', 'JGB 10Y', 'US-JP 스프레드',
+        'USD/KRW', 'USD/BRL', 'EM 강세지수',
+        '유동성 점수', '신호', '투자 권장'
+      ]);
+      globalHistorySheet.getRange(1, 1, 1, 20).setFontWeight('bold')
+        .setBackground('#1f77b4')
+        .setFontColor('white');
+      globalHistorySheet.setFrozenRows(1);
+      globalHistorySheet.setColumnWidth(1, 150);
+    }
+
+    // 올해 1월 1일
+    const startDate = new Date('2025-01-01');
+
+    // 모든 지표의 데이터 가져오기
+    Logger.log('📥 FRED 데이터 수집 중...');
+
+    // US 지표
+    const walclData = getFredDataRange(CONFIG.FRED_IDS.WALCL, startDate);
+    const tgaData = getFredDataRange(CONFIG.FRED_IDS.TGA, startDate);
+    const onRrpData = getFredDataRange(CONFIG.FRED_IDS.ON_RRP, startDate);
+
+    // Global 지표
+    const dxyData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.DXY, startDate);
+    const chinaM2Data = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_M2_YOY, startDate);
+    const chinaLoanData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_LOAN, startDate);
+    const chinaReservesData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_RESERVES, startDate);
+    const usdjpyData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDJPY, startDate);
+    const jgb10yData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.JGB_10Y, startDate);
+    const us10yData = getFredDataRange('DGS10', startDate);
+    const usdkrwData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDKRW, startDate);
+    const usdbrData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDBRL, startDate);
+    const usdmxnData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDMXN, startDate);
+
+    // WALCL을 기준으로 날짜 목록 생성 (주간 데이터)
+    const walclDates = Object.keys(walclData).sort();
+
+    if (walclDates.length === 0) {
+      ui.alert('❌ WALCL 데이터를 찾을 수 없습니다.');
+      return;
+    }
+
+    Logger.log(`📊 ${walclDates.length}개 주간 데이터 포인트 처리 중...`);
+
+    // 각 날짜별로 데이터 행 생성
+    const rows = [];
+    for (let i = 0; i < walclDates.length; i++) {
+      const date = walclDates[i];
+
+      // US 데이터
+      const walcl = walclData[date];
+      const walcl_prev = i > 0 ? walclData[walclDates[i-1]] : walcl;
+      const walcl_wow = walcl - walcl_prev;
+
+      const tga = getClosestValue(tgaData, date);
+      const tga_prev = i > 0 ? getClosestValue(tgaData, walclDates[i-1]) : tga;
+      const tga_wow = tga - tga_prev;
+
+      const onRrp = getClosestValue(onRrpData, date);
+
+      // Global 데이터
+      const dxy = getClosestValue(dxyData, date);
+      const dxy_prev = i > 0 ? getClosestValue(dxyData, walclDates[i-1]) : dxy;
+      const dxy_wow = dxy - dxy_prev;
+
+      const chinaM2 = getClosestValue(chinaM2Data, date);
+      const chinaLoan = getClosestValue(chinaLoanData, date);
+      const chinaReserves = getClosestValue(chinaReservesData, date);
+
+      const usdjpy = getClosestValue(usdjpyData, date);
+      const jgb10y = getClosestValue(jgb10yData, date);
+      const us10y = getClosestValue(us10yData, date);
+      const usJpSpread = us10y - jgb10y;
+
+      const usdkrw = getClosestValue(usdkrwData, date);
+      const usdbrl = getClosestValue(usdbrData, date);
+      const usdmxn = getClosestValue(usdmxnData, date);
+
+      // EM 강세 지수 계산
+      const usdkrw_prev = i > 0 ? getClosestValue(usdkrwData, walclDates[i-1]) : usdkrw;
+      const usdbrl_prev = i > 0 ? getClosestValue(usdbrData, walclDates[i-1]) : usdbrl;
+      const usdmxn_prev = i > 0 ? getClosestValue(usdmxnData, walclDates[i-1]) : usdmxn;
+
+      const krw_change = usdkrw_prev !== 0 ? ((usdkrw - usdkrw_prev) / usdkrw_prev) * 100 : 0;
+      const brl_change = usdbrl_prev !== 0 ? ((usdbrl - usdbrl_prev) / usdbrl_prev) * 100 : 0;
+      const mxn_change = usdmxn_prev !== 0 ? ((usdmxn - usdmxn_prev) / usdmxn_prev) * 100 : 0;
+
+      const emStrengthIndex = -(krw_change + brl_change + mxn_change) / 3;
+
+      // === 유동성 점수 계산 (analyzeGlobalLiquidity 로직과 동일) ===
+      let liquidityScore = 0;
+
+      // 미국 요인 (40%)
+      if (walcl_wow > 50000) liquidityScore += 20;
+      else if (walcl_wow > 10000) liquidityScore += 10;
+      else if (walcl_wow < -50000) liquidityScore -= 20;
+      else if (walcl_wow < -10000) liquidityScore -= 10;
+
+      if (tga_wow < -100000) liquidityScore += 10;
+      else if (tga_wow < -50000) liquidityScore += 5;
+      else if (tga_wow > 100000) liquidityScore -= 10;
+      else if (tga_wow > 50000) liquidityScore -= 5;
+
+      if (onRrp > 500000) liquidityScore -= 15;
+      else if (onRrp > 300000) liquidityScore -= 10;
+      else if (onRrp > 200000) liquidityScore += 0;
+      else if (onRrp > 100000) liquidityScore += 5;
+      else liquidityScore += 10;
+
+      // 달러 요인 (20%)
+      if (dxy_wow < -2) liquidityScore += 25;
+      else if (dxy_wow < -1) liquidityScore += 20;
+      else if (dxy_wow > 2) liquidityScore -= 25;
+      else if (dxy_wow > 1) liquidityScore -= 20;
+
+      // 중국 요인 (20%)
+      if (chinaM2 > 12) liquidityScore += 20;
+      else if (chinaM2 > 10) liquidityScore += 15;
+      else if (chinaM2 < 6) liquidityScore -= 20;
+      else if (chinaM2 < 8) liquidityScore -= 10;
+
+      // 일본 요인 (10%)
+      if (usdjpy > 155) liquidityScore -= 15;
+      else if (usdjpy > 150) liquidityScore -= 10;
+      else if (usdjpy > 145) liquidityScore -= 5;
+      else if (usdjpy < 130) liquidityScore += 5;
+
+      // 신흥국 요인 (10%)
+      if (emStrengthIndex > 2) liquidityScore += 15;
+      else if (emStrengthIndex > 1) liquidityScore += 10;
+      else if (emStrengthIndex < -2) liquidityScore -= 15;
+      else if (emStrengthIndex < -1) liquidityScore -= 10;
+
+      // 신호 및 권장사항
+      let signal = '';
+      let recommendation = '';
+
+      if (liquidityScore >= 80) {
+        signal = '🚀🚀 SUPER LIQUIDITY';
+        recommendation = '공격적 Risk-ON: 레버리지 ETF, 성장주, 비트코인, 신흥국 전면 확대';
+      } else if (liquidityScore >= 50) {
+        signal = '🚀 EXTREME LIQUIDITY';
+        recommendation = '적극적 Risk-ON: 성장주, 신흥국, 원자재 비중 확대';
+      } else if (liquidityScore >= 20) {
+        signal = '✅ HIGH LIQUIDITY';
+        recommendation = '위험자산 비중 유지/확대, 밸류/그로스 균형';
+      } else if (liquidityScore >= -20) {
+        signal = '⚖️ NEUTRAL';
+        recommendation = '포트폴리오 균형 유지, 관망';
+      } else if (liquidityScore >= -50) {
+        signal = '⚠️ TIGHT';
+        recommendation = '현금/채권 비중 증대, 방어주 선호';
+      } else if (liquidityScore >= -80) {
+        signal = '🔴 EXTREME TIGHT';
+        recommendation = '방어적 포지션, 달러/금/국채 선호';
+      } else {
+        signal = '🔴🔴 CRISIS MODE';
+        recommendation = '현금 확보, 손절 고려, 변동성 헤지 필수';
+      }
+
+      const timestamp = new Date(date);
+
+      rows.push([
+        timestamp,
+        walcl,
+        walcl_wow,
+        tga,
+        tga_wow,
+        onRrp,
+        dxy,
+        dxy_wow,
+        chinaM2,
+        chinaLoan,
+        chinaReserves,
+        usdjpy,
+        jgb10y,
+        usJpSpread,
+        usdkrw,
+        usdbrl,
+        emStrengthIndex,
+        liquidityScore,
+        signal,
+        recommendation
+      ]);
+    }
+
+    // Global_History 시트에 모든 행 추가
+    if (rows.length > 0) {
+      globalHistorySheet.getRange(globalHistorySheet.getLastRow() + 1, 1, rows.length, 20).setValues(rows);
+      Logger.log(`✅ ${rows.length}개 행이 Global_History 시트에 추가됨`);
+
+      ui.alert(
+        '✅ 완료',
+        `${rows.length}개 데이터 포인트가 Global_History 시트에 추가되었습니다.\n\n기간: ${walclDates[0]} ~ ${walclDates[walclDates.length-1]}`,
+        ui.ButtonSet.OK
+      );
+    }
+
+    Logger.log('=== Global_History 시트 업데이트 완료 ===');
+
+  } catch (e) {
+    Logger.log(`❌ Global_History 업데이트 오류: ${e.message}`);
+    SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
   }
 }
 
@@ -1640,6 +2076,10 @@ function onOpen() {
     .addItem('🔄 전체 업데이트', 'updateLiveMonitor')
     .addItem('🌐 글로벌 유동성 분석', 'analyzeGlobalLiquidity')
     .addSeparator()
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('📅 History 업데이트')
+      .addItem('📈 History 시트 채우기 (1월~현재)', 'populateHistoryFromJanuary')
+      .addItem('🌍 Global_History 시트 채우기 (1월~현재)', 'populateGlobalHistoryFromJanuary'))
+    .addSeparator()
     .addSubMenu(SpreadsheetApp.getUi().createMenu('🔍 개별 체크')
       .addItem('🇨🇳 중국 유동성', 'checkChinaLiquidity')
       .addItem('🇯🇵 엔캐리 리스크', 'checkJapanRisk')
@@ -1698,6 +2138,7 @@ function showHelp() {
     <ul>
       <li><strong>전체 업데이트:</strong> 미국 + 글로벌 데이터 갱신 및 히스토리 누적</li>
       <li><strong>글로벌 분석:</strong> 종합 유동성 점수 계산</li>
+      <li><strong>History 업데이트:</strong> 올해 1월부터 현재까지 데이터를 History/Global_History 시트에 일괄 추가</li>
       <li><strong>개별 체크:</strong> 중국, 일본, TGA, DXY 상세 분석</li>
       <li><strong>알림 설정:</strong> 2시간마다 자동 체크 (해제 가능)</li>
     </ul>
