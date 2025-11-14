@@ -1714,16 +1714,27 @@ function createLiquidityGraph() {
       .setFontColor('white');
     graphSheet.getRange('A1:F1').merge();
 
-    // === 메인 차트: 유동성 점수 ===
+    // Global_History에서 전체 데이터 가져오기 (헤더 포함)
+    const allData = globalHistorySheet.getRange(1, 1, lastRow, 20).getValues();
+    const headers = allData[0];
+    const dataRows = allData.slice(1);
+
+    // === 차트 1: 유동성 점수 ===
+    const chart1StartRow = 3;
+    const chart1Data = [
+      [headers[0], headers[17]], // 타임스탬프, 유동성 점수
+      ...dataRows.map(row => [row[0], row[17]])
+    ];
+    graphSheet.getRange(chart1StartRow, 1, chart1Data.length, 2).setValues(chart1Data);
+    graphSheet.getRange(chart1StartRow, 1, 1, 2).setFontWeight('bold').setBackground('#f0f0f0');
+
     const mainChart = graphSheet.newChart()
       .setChartType(Charts.ChartType.LINE)
-      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프 (헤더 포함)
-      .addRange(globalHistorySheet.getRange(1, 18, lastRow, 1)) // 유동성 점수 (헤더 포함)
-      .setPosition(3, 1, 0, 0)
+      .addRange(graphSheet.getRange(chart1StartRow, 1, chart1Data.length, 2))
+      .setPosition(chart1StartRow + chart1Data.length + 2, 1, 0, 0)
       .setOption('title', '유동성 점수 추세')
       .setOption('width', 1100)
       .setOption('height', 450)
-      .setOption('useFirstColumnAsDomain', true)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1751,17 +1762,22 @@ function createLiquidityGraph() {
 
     graphSheet.insertChart(mainChart);
 
-    // === 서브 차트 1: 미국 요인 (WALCL WoW, TGA WoW) ===
+    // === 차트 2: 미국 요인 (WALCL WoW, TGA WoW) ===
+    const chart2StartRow = chart1StartRow + chart1Data.length + 28;
+    const chart2Data = [
+      [headers[0], headers[2], headers[4]], // 타임스탬프, WALCL WoW, TGA WoW
+      ...dataRows.map(row => [row[0], row[2], row[4]])
+    ];
+    graphSheet.getRange(chart2StartRow, 1, chart2Data.length, 3).setValues(chart2Data);
+    graphSheet.getRange(chart2StartRow, 1, 1, 3).setFontWeight('bold').setBackground('#f0f0f0');
+
     const usChart = graphSheet.newChart()
       .setChartType(Charts.ChartType.LINE)
-      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프 (헤더 포함)
-      .addRange(globalHistorySheet.getRange(1, 3, lastRow, 1)) // WALCL WoW (헤더 포함)
-      .addRange(globalHistorySheet.getRange(1, 5, lastRow, 1)) // TGA WoW (헤더 포함)
-      .setPosition(28, 1, 0, 0)
+      .addRange(graphSheet.getRange(chart2StartRow, 1, chart2Data.length, 3))
+      .setPosition(chart2StartRow + chart2Data.length + 2, 1, 0, 0)
       .setOption('title', '미국 유동성 요인')
       .setOption('width', 650)
       .setOption('height', 380)
-      .setOption('useFirstColumnAsDomain', true)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1792,18 +1808,22 @@ function createLiquidityGraph() {
 
     graphSheet.insertChart(usChart);
 
-    // === 서브 차트 2: 달러 및 글로벌 요인 ===
+    // === 차트 3: 글로벌 요인 (DXY WoW, 중국 M2, EM 지수) ===
+    const chart3StartRow = chart2StartRow + chart2Data.length + 28;
+    const chart3Data = [
+      [headers[0], headers[7], headers[8], headers[16]], // 타임스탬프, DXY WoW, 중국 M2, EM 강세지수
+      ...dataRows.map(row => [row[0], row[7], row[8], row[16]])
+    ];
+    graphSheet.getRange(chart3StartRow, 1, chart3Data.length, 4).setValues(chart3Data);
+    graphSheet.getRange(chart3StartRow, 1, 1, 4).setFontWeight('bold').setBackground('#f0f0f0');
+
     const globalChart = graphSheet.newChart()
       .setChartType(Charts.ChartType.LINE)
-      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프 (헤더 포함)
-      .addRange(globalHistorySheet.getRange(1, 8, lastRow, 1)) // DXY WoW (헤더 포함)
-      .addRange(globalHistorySheet.getRange(1, 9, lastRow, 1)) // 중국 M2 (헤더 포함)
-      .addRange(globalHistorySheet.getRange(1, 17, lastRow, 1)) // EM 강세지수 (헤더 포함)
-      .setPosition(28, 8, 0, 0)
+      .addRange(graphSheet.getRange(chart3StartRow, 1, chart3Data.length, 4))
+      .setPosition(chart3StartRow + chart3Data.length + 2, 1, 0, 0)
       .setOption('title', '글로벌 요인 (DXY WoW, 중국 M2, EM 지수)')
       .setOption('width', 650)
       .setOption('height', 380)
-      .setOption('useFirstColumnAsDomain', true)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1839,16 +1859,22 @@ function createLiquidityGraph() {
 
     graphSheet.insertChart(globalChart);
 
-    // === 서브 차트 3: 일본 요인 (USD/JPY) ===
+    // === 차트 4: 일본 요인 (USD/JPY) ===
+    const chart4StartRow = chart3StartRow + chart3Data.length + 28;
+    const chart4Data = [
+      [headers[0], headers[11]], // 타임스탬프, USD/JPY
+      ...dataRows.map(row => [row[0], row[11]])
+    ];
+    graphSheet.getRange(chart4StartRow, 1, chart4Data.length, 2).setValues(chart4Data);
+    graphSheet.getRange(chart4StartRow, 1, 1, 2).setFontWeight('bold').setBackground('#f0f0f0');
+
     const japanChart = graphSheet.newChart()
       .setChartType(Charts.ChartType.LINE)
-      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프 (헤더 포함)
-      .addRange(globalHistorySheet.getRange(1, 12, lastRow, 1)) // USD/JPY (헤더 포함)
-      .setPosition(53, 1, 0, 0)
+      .addRange(graphSheet.getRange(chart4StartRow, 1, chart4Data.length, 2))
+      .setPosition(chart4StartRow + chart4Data.length + 2, 1, 0, 0)
       .setOption('title', '일본 요인 (USD/JPY)')
       .setOption('width', 650)
       .setOption('height', 380)
-      .setOption('useFirstColumnAsDomain', true)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1874,23 +1900,10 @@ function createLiquidityGraph() {
 
     graphSheet.insertChart(japanChart);
 
-    // === 통합 차트: 모든 주요 요인 (정규화) ===
-    // 정규화된 데이터를 별도 영역에 준비
-    const normalizedStartRow = 80;
-    graphSheet.getRange(normalizedStartRow, 1).setValue('정규화된 데이터 (참고용)')
-      .setFontWeight('bold')
-      .setBackground('#f0f0f0');
+    // === 차트 5: 통합 차트 - 모든 주요 요인 (정규화) ===
+    const chart5StartRow = chart4StartRow + chart4Data.length + 28;
 
-    // 헤더 설정
-    graphSheet.getRange(normalizedStartRow + 1, 1, 1, 7).setValues([[
-      '날짜', '유동성 점수', 'WALCL WoW', 'DXY WoW', '중국 M2', 'USD/JPY', 'EM 지수'
-    ]]).setFontWeight('bold');
-
-    // 데이터 가져오기 및 정규화
-    const rawData = globalHistorySheet.getRange(2, 1, lastRow - 1, 20).getValues();
-    const normalizedData = [];
-
-    // 각 컬럼의 최소/최대값 찾기
+    // 정규화된 데이터 생성
     const cols = {
       score: 17,    // 유동성 점수
       walcl: 2,     // WALCL WoW
@@ -1900,9 +1913,10 @@ function createLiquidityGraph() {
       em: 16        // EM 지수
     };
 
+    // 각 컬럼의 최소/최대값 찾기
     const ranges = {};
     for (const [key, idx] of Object.entries(cols)) {
-      const values = rawData.map(row => row[idx]);
+      const values = dataRows.map(row => row[idx]);
       ranges[key] = {
         min: Math.min(...values),
         max: Math.max(...values)
@@ -1915,9 +1929,10 @@ function createLiquidityGraph() {
       return ((value - min) / (max - min)) * 100;
     };
 
-    // 정규화된 데이터 생성
-    rawData.forEach(row => {
-      normalizedData.push([
+    // 정규화된 데이터 배열 생성 (헤더 포함)
+    const chart5Data = [
+      ['날짜', '유동성 점수', 'WALCL WoW', 'DXY WoW', '중국 M2', 'USD/JPY', 'EM 지수'], // 헤더
+      ...dataRows.map(row => [
         row[0], // 날짜
         normalize(row[cols.score], ranges.score.min, ranges.score.max),
         normalize(row[cols.walcl], ranges.walcl.min, ranges.walcl.max),
@@ -1925,73 +1940,71 @@ function createLiquidityGraph() {
         normalize(row[cols.chinaM2], ranges.chinaM2.min, ranges.chinaM2.max),
         normalize(row[cols.usdjpy], ranges.usdjpy.min, ranges.usdjpy.max),
         normalize(row[cols.em], ranges.em.min, ranges.em.max)
-      ]);
-    });
+      ])
+    ];
 
-    // 정규화된 데이터 시트에 쓰기
-    if (normalizedData.length > 0) {
-      graphSheet.getRange(normalizedStartRow + 2, 1, normalizedData.length, 7).setValues(normalizedData);
+    // 정규화된 데이터를 Graph 시트에 쓰기
+    graphSheet.getRange(chart5StartRow, 1, chart5Data.length, 7).setValues(chart5Data);
+    graphSheet.getRange(chart5StartRow, 1, 1, 7).setFontWeight('bold').setBackground('#f0f0f0');
 
-      // 통합 차트 생성
-      const integratedChart = graphSheet.newChart()
-        .setChartType(Charts.ChartType.LINE)
-        .addRange(graphSheet.getRange(normalizedStartRow + 1, 1, normalizedData.length + 1, 7)) // 헤더 포함
-        .setPosition(53, 8, 0, 0)
-        .setOption('title', '모든 요인 통합 뷰 (정규화 0-100)')
-        .setOption('width', 1350)
-        .setOption('height', 500)
-        .setOption('useFirstColumnAsDomain', true)
-        .setOption('hAxis', {
-          title: '날짜',
-          format: 'MMM dd',
-          textStyle: { fontSize: 11 }
-        })
-        .setOption('vAxis', {
-          title: '정규화 값 (0-100)',
-          textStyle: { fontSize: 11 }
-        })
-        .setOption('series', {
-          0: { // 유동성 점수
-            color: '#2E7D32',
-            lineWidth: 5,
-            pointSize: 0
-          },
-          1: { // WALCL WoW
-            color: '#1976D2',
-            lineWidth: 1.5,
-            pointSize: 0
-          },
-          2: { // DXY WoW
-            color: '#F57C00',
-            lineWidth: 1.5,
-            pointSize: 0
-          },
-          3: { // 중국 M2
-            color: '#C62828',
-            lineWidth: 1.5,
-            pointSize: 0
-          },
-          4: { // USD/JPY
-            color: '#00796B',
-            lineWidth: 1.5,
-            pointSize: 0
-          },
-          5: { // EM 지수
-            color: '#6A1B9A',
-            lineWidth: 1.5,
-            pointSize: 0
-          }
-        })
-        .setOption('legend', {
-          position: 'top',
-          textStyle: { fontSize: 14, bold: true }
-        })
-        .setOption('chartArea', { width: '85%', height: '75%' })
-        .setOption('curveType', 'function')
-        .build();
+    // 통합 차트 생성
+    const integratedChart = graphSheet.newChart()
+      .setChartType(Charts.ChartType.LINE)
+      .addRange(graphSheet.getRange(chart5StartRow, 1, chart5Data.length, 7))
+      .setPosition(chart5StartRow + chart5Data.length + 2, 1, 0, 0)
+      .setOption('title', '모든 요인 통합 뷰 (정규화 0-100)')
+      .setOption('width', 1350)
+      .setOption('height', 500)
+      .setOption('hAxis', {
+        title: '날짜',
+        format: 'MMM dd',
+        textStyle: { fontSize: 11 }
+      })
+      .setOption('vAxis', {
+        title: '정규화 값 (0-100)',
+        textStyle: { fontSize: 11 }
+      })
+      .setOption('series', {
+        0: { // 유동성 점수
+          color: '#2E7D32',
+          lineWidth: 5,
+          pointSize: 0
+        },
+        1: { // WALCL WoW
+          color: '#1976D2',
+          lineWidth: 1.5,
+          pointSize: 0
+        },
+        2: { // DXY WoW
+          color: '#F57C00',
+          lineWidth: 1.5,
+          pointSize: 0
+        },
+        3: { // 중국 M2
+          color: '#C62828',
+          lineWidth: 1.5,
+          pointSize: 0
+        },
+        4: { // USD/JPY
+          color: '#00796B',
+          lineWidth: 1.5,
+          pointSize: 0
+        },
+        5: { // EM 지수
+          color: '#6A1B9A',
+          lineWidth: 1.5,
+          pointSize: 0
+        }
+      })
+      .setOption('legend', {
+        position: 'top',
+        textStyle: { fontSize: 14, bold: true }
+      })
+      .setOption('chartArea', { width: '85%', height: '75%' })
+      .setOption('curveType', 'function')
+      .build();
 
-      graphSheet.insertChart(integratedChart);
-    }
+    graphSheet.insertChart(integratedChart);
 
     // Graph 시트를 활성화
     ss.setActiveSheet(graphSheet);
