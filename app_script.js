@@ -1717,12 +1717,12 @@ function createLiquidityGraph() {
     // === 메인 차트: 유동성 점수 ===
     const mainChart = graphSheet.newChart()
       .setChartType(Charts.ChartType.LINE)
-      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프
-      .addRange(globalHistorySheet.getRange(1, 18, lastRow, 1)) // 유동성 점수
+      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프 (헤더 포함)
+      .addRange(globalHistorySheet.getRange(1, 18, lastRow, 1)) // 유동성 점수 (헤더 포함)
       .setPosition(3, 1, 0, 0)
       .setOption('title', '유동성 점수 추세')
-      .setOption('width', 1000)
-      .setOption('height', 400)
+      .setOption('width', 1100)
+      .setOption('height', 450)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1742,24 +1742,24 @@ function createLiquidityGraph() {
       })
       .setOption('legend', {
         position: 'top',
-        textStyle: { fontSize: 13, bold: true }
+        textStyle: { fontSize: 14, bold: true }
       })
-      .setOption('chartArea', { width: '75%', height: '70%' })
+      .setOption('chartArea', { width: '80%', height: '70%' })
       .setOption('curveType', 'function')
       .build();
 
     graphSheet.insertChart(mainChart);
 
-    // === 서브 차트 1: 미국 요인 (WALCL WoW, TGA WoW, ON RRP) ===
+    // === 서브 차트 1: 미국 요인 (WALCL WoW, TGA WoW) ===
     const usChart = graphSheet.newChart()
       .setChartType(Charts.ChartType.LINE)
-      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프
-      .addRange(globalHistorySheet.getRange(1, 3, lastRow, 1)) // WALCL WoW
-      .addRange(globalHistorySheet.getRange(1, 5, lastRow, 1)) // TGA WoW
-      .setPosition(3, 7, 0, 0)
+      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프 (헤더 포함)
+      .addRange(globalHistorySheet.getRange(1, 3, lastRow, 1)) // WALCL WoW (헤더 포함)
+      .addRange(globalHistorySheet.getRange(1, 5, lastRow, 1)) // TGA WoW (헤더 포함)
+      .setPosition(28, 1, 0, 0)
       .setOption('title', '미국 유동성 요인')
-      .setOption('width', 600)
-      .setOption('height', 300)
+      .setOption('width', 650)
+      .setOption('height', 380)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1772,20 +1772,20 @@ function createLiquidityGraph() {
       .setOption('series', {
         0: {
           color: '#1976D2',
-          lineWidth: 2,
+          lineWidth: 2.5,
           pointSize: 3
         },
         1: {
           color: '#D32F2F',
-          lineWidth: 2,
+          lineWidth: 2.5,
           pointSize: 3
         }
       })
       .setOption('legend', {
-        position: 'bottom',
-        textStyle: { fontSize: 12, bold: true }
+        position: 'top',
+        textStyle: { fontSize: 13, bold: true }
       })
-      .setOption('chartArea', { width: '75%', height: '60%' })
+      .setOption('chartArea', { width: '80%', height: '70%' })
       .build();
 
     graphSheet.insertChart(usChart);
@@ -1793,14 +1793,14 @@ function createLiquidityGraph() {
     // === 서브 차트 2: 달러 및 글로벌 요인 ===
     const globalChart = graphSheet.newChart()
       .setChartType(Charts.ChartType.LINE)
-      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프
-      .addRange(globalHistorySheet.getRange(1, 8, lastRow, 1)) // DXY WoW
-      .addRange(globalHistorySheet.getRange(1, 9, lastRow, 1)) // 중국 M2
-      .addRange(globalHistorySheet.getRange(1, 17, lastRow, 1)) // EM 강세지수
-      .setPosition(22, 1, 0, 0)
+      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프 (헤더 포함)
+      .addRange(globalHistorySheet.getRange(1, 8, lastRow, 1)) // DXY WoW (헤더 포함)
+      .addRange(globalHistorySheet.getRange(1, 9, lastRow, 1)) // 중국 M2 (헤더 포함)
+      .addRange(globalHistorySheet.getRange(1, 17, lastRow, 1)) // EM 강세지수 (헤더 포함)
+      .setPosition(28, 8, 0, 0)
       .setOption('title', '글로벌 요인 (DXY WoW, 중국 M2, EM 지수)')
-      .setOption('width', 600)
-      .setOption('height', 300)
+      .setOption('width', 650)
+      .setOption('height', 380)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1813,26 +1813,25 @@ function createLiquidityGraph() {
       .setOption('series', {
         0: {
           color: '#F57C00',
-          lineWidth: 2,
+          lineWidth: 2.5,
           pointSize: 3
         },
         1: {
           color: '#C62828',
-          lineWidth: 2,
+          lineWidth: 2.5,
           pointSize: 3
         },
         2: {
           color: '#6A1B9A',
-          lineWidth: 2,
+          lineWidth: 2.5,
           pointSize: 3
         }
       })
       .setOption('legend', {
-        position: 'bottom',
-        textStyle: { fontSize: 12, bold: true },
-        maxLines: 2
+        position: 'top',
+        textStyle: { fontSize: 13, bold: true }
       })
-      .setOption('chartArea', { width: '75%', height: '55%' })
+      .setOption('chartArea', { width: '80%', height: '70%' })
       .build();
 
     graphSheet.insertChart(globalChart);
@@ -1840,12 +1839,12 @@ function createLiquidityGraph() {
     // === 서브 차트 3: 일본 요인 (USD/JPY) ===
     const japanChart = graphSheet.newChart()
       .setChartType(Charts.ChartType.LINE)
-      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프
-      .addRange(globalHistorySheet.getRange(1, 12, lastRow, 1)) // USD/JPY
-      .setPosition(22, 7, 0, 0)
+      .addRange(globalHistorySheet.getRange(1, 1, lastRow, 1)) // 타임스탬프 (헤더 포함)
+      .addRange(globalHistorySheet.getRange(1, 12, lastRow, 1)) // USD/JPY (헤더 포함)
+      .setPosition(53, 1, 0, 0)
       .setOption('title', '일본 요인 (USD/JPY)')
-      .setOption('width', 600)
-      .setOption('height', 300)
+      .setOption('width', 650)
+      .setOption('height', 380)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1858,22 +1857,22 @@ function createLiquidityGraph() {
       .setOption('series', {
         0: {
           color: '#00796B',
-          lineWidth: 2,
+          lineWidth: 2.5,
           pointSize: 3
         }
       })
       .setOption('legend', {
-        position: 'bottom',
-        textStyle: { fontSize: 12, bold: true }
+        position: 'top',
+        textStyle: { fontSize: 13, bold: true }
       })
-      .setOption('chartArea', { width: '75%', height: '60%' })
+      .setOption('chartArea', { width: '80%', height: '70%' })
       .build();
 
     graphSheet.insertChart(japanChart);
 
     // === 통합 차트: 모든 주요 요인 (정규화) ===
     // 정규화된 데이터를 별도 영역에 준비
-    const normalizedStartRow = 42;
+    const normalizedStartRow = 80;
     graphSheet.getRange(normalizedStartRow, 1).setValue('정규화된 데이터 (참고용)')
       .setFontWeight('bold')
       .setBackground('#f0f0f0');
@@ -1932,11 +1931,11 @@ function createLiquidityGraph() {
       // 통합 차트 생성
       const integratedChart = graphSheet.newChart()
         .setChartType(Charts.ChartType.LINE)
-        .addRange(graphSheet.getRange(normalizedStartRow + 2, 1, normalizedData.length, 7))
-        .setPosition(41, 1, 0, 0)
+        .addRange(graphSheet.getRange(normalizedStartRow + 1, 1, normalizedData.length + 1, 7)) // 헤더 포함
+        .setPosition(53, 8, 0, 0)
         .setOption('title', '모든 요인 통합 뷰 (정규화 0-100)')
-        .setOption('width', 1200)
-        .setOption('height', 450)
+        .setOption('width', 1350)
+        .setOption('height', 500)
         .setOption('hAxis', {
           title: '날짜',
           format: 'MMM dd',
@@ -1979,12 +1978,10 @@ function createLiquidityGraph() {
           }
         })
         .setOption('legend', {
-          position: 'bottom',
-          textStyle: { fontSize: 13, bold: true },
-          maxLines: 3,
-          alignment: 'center'
+          position: 'top',
+          textStyle: { fontSize: 14, bold: true }
         })
-        .setOption('chartArea', { width: '85%', height: '60%' })
+        .setOption('chartArea', { width: '85%', height: '75%' })
         .setOption('curveType', 'function')
         .build();
 
