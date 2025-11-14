@@ -1723,6 +1723,7 @@ function createLiquidityGraph() {
       .setOption('title', '유동성 점수 추세')
       .setOption('width', 1100)
       .setOption('height', 450)
+      .setOption('useFirstColumnAsDomain', true)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1760,6 +1761,7 @@ function createLiquidityGraph() {
       .setOption('title', '미국 유동성 요인')
       .setOption('width', 650)
       .setOption('height', 380)
+      .setOption('useFirstColumnAsDomain', true)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1801,6 +1803,7 @@ function createLiquidityGraph() {
       .setOption('title', '글로벌 요인 (DXY WoW, 중국 M2, EM 지수)')
       .setOption('width', 650)
       .setOption('height', 380)
+      .setOption('useFirstColumnAsDomain', true)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1845,6 +1848,7 @@ function createLiquidityGraph() {
       .setOption('title', '일본 요인 (USD/JPY)')
       .setOption('width', 650)
       .setOption('height', 380)
+      .setOption('useFirstColumnAsDomain', true)
       .setOption('hAxis', {
         title: '날짜',
         format: 'MMM dd',
@@ -1936,6 +1940,7 @@ function createLiquidityGraph() {
         .setOption('title', '모든 요인 통합 뷰 (정규화 0-100)')
         .setOption('width', 1350)
         .setOption('height', 500)
+        .setOption('useFirstColumnAsDomain', true)
         .setOption('hAxis', {
           title: '날짜',
           format: 'MMM dd',
