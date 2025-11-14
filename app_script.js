@@ -1740,7 +1740,10 @@ function createLiquidityGraph() {
           pointSize: 5
         }
       })
-      .setOption('legend', { position: 'top' })
+      .setOption('legend', {
+        position: 'top',
+        textStyle: { fontSize: 13, bold: true }
+      })
       .setOption('chartArea', { width: '75%', height: '70%' })
       .setOption('curveType', 'function')
       .build();
@@ -1778,8 +1781,11 @@ function createLiquidityGraph() {
           pointSize: 3
         }
       })
-      .setOption('legend', { position: 'top' })
-      .setOption('chartArea', { width: '70%', height: '65%' })
+      .setOption('legend', {
+        position: 'bottom',
+        textStyle: { fontSize: 12, bold: true }
+      })
+      .setOption('chartArea', { width: '75%', height: '60%' })
       .build();
 
     graphSheet.insertChart(usChart);
@@ -1821,8 +1827,12 @@ function createLiquidityGraph() {
           pointSize: 3
         }
       })
-      .setOption('legend', { position: 'top' })
-      .setOption('chartArea', { width: '70%', height: '65%' })
+      .setOption('legend', {
+        position: 'bottom',
+        textStyle: { fontSize: 12, bold: true },
+        maxLines: 2
+      })
+      .setOption('chartArea', { width: '75%', height: '55%' })
       .build();
 
     graphSheet.insertChart(globalChart);
@@ -1852,8 +1862,11 @@ function createLiquidityGraph() {
           pointSize: 3
         }
       })
-      .setOption('legend', { position: 'top' })
-      .setOption('chartArea', { width: '70%', height: '65%' })
+      .setOption('legend', {
+        position: 'bottom',
+        textStyle: { fontSize: 12, bold: true }
+      })
+      .setOption('chartArea', { width: '75%', height: '60%' })
       .build();
 
     graphSheet.insertChart(japanChart);
@@ -1923,7 +1936,7 @@ function createLiquidityGraph() {
         .setPosition(41, 1, 0, 0)
         .setOption('title', '모든 요인 통합 뷰 (정규화 0-100)')
         .setOption('width', 1200)
-        .setOption('height', 400)
+        .setOption('height', 450)
         .setOption('hAxis', {
           title: '날짜',
           format: 'MMM dd',
@@ -1965,8 +1978,13 @@ function createLiquidityGraph() {
             pointSize: 0
           }
         })
-        .setOption('legend', { position: 'top' })
-        .setOption('chartArea', { width: '80%', height: '70%' })
+        .setOption('legend', {
+          position: 'bottom',
+          textStyle: { fontSize: 13, bold: true },
+          maxLines: 3,
+          alignment: 'center'
+        })
+        .setOption('chartArea', { width: '85%', height: '60%' })
         .setOption('curveType', 'function')
         .build();
 
