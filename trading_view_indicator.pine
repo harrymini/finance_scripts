@@ -1,0 +1,458 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © xavier_2sy
+// 【指标说明】
+// 保留原指标的两种模式，模式1为使用影线突破更新下一根上涨/下跌K线并进行传递，模式2使用实体突破影线进行更新。
+// 解决了原指标重绘的问题，故在少数地方结果与原指标不同。
+// 【更新】将逻辑封装为自定义函数，未来方便添加新的HTF
+// 【更新】优化逻辑提升运行速度
+// 【更新】优化变量命名，方便未来增加多个周期的开发
+// 【更新】增加反转符号
+// 【更新】增加反转判断横线
+// 【更新】增加HTF_2，反转，入场，判断横线
+// 【更新】更新指标输入面板
+// 【更新】更新了timeframe 大于 htf_timeframe时可能出现的BUG问题，虽然此时指标无法作为参考。
+// 2025/10/01
+// 【更新】增加当前周期，方便做量化时辅助判断
+// 【更新】增加优化运行逻辑，提升速度
+// 【更新】当HTF>当前TF时，不再显示信号
+// 2025/10/13
+// 【更新】整体重构，使用dataclasses对变量进行重新规划，方便后续开发和维护
+// 【更新】更新显示逻辑，入场信号提前1根K线显示，方便回测开发
+// 【其他说明】该指标使用卡蛋的逻辑，但布局借鉴其他收费指标作者。受人恩惠，不应影响该作者指标销售，因此警报功能暂不予以加入。需要请自行开发，几行代码的事很简单。
+// 【更新】修复当前周期反转点显示错误的BUG
+// 【更新】优化当前周期反转点逻辑，当反包K线反包的同时又同时突破了了ldl或luh时，同步更新ldl和luh，该优化是为了后续量化开发中可以更精准的选择止盈止损点。只修改的当前周期，在HTF1和HTF2中未做修改。
+
+//@version=6
+indicator("卡蛋K线反转-V5-发布版", overlay=true, dynamic_requests=true, max_bars_back=500, max_labels_count=300, max_lines_count = 100)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART1-输入参数】
+// 模式1为使用影线突破更新下一根上涨/下跌K线并进行传递，模式2使用实体突破影线进行更新
+pullbackType = input.string("1", "K线更新方式", ["1", "2"], group = '当前周期')
+
+// 周期
+nowTimeFrame = str.tostring(timeframe.in_seconds() / 60)
+higherTimeframe_1 = input.timeframe("15", "HTF_1", group = 'HTF_1')
+higherTimeframe_2 = input.timeframe("5", "HTF_2", group = 'HTF_2')
+
+// HTF相对当前周期的倍数关系, 小于1时为1
+var int periodMultiple_HTF1 = timeframe.in_seconds(higherTimeframe_1) / timeframe.in_seconds()
+var int periodMultiple_HTF2 = timeframe.in_seconds(higherTimeframe_2) / timeframe.in_seconds()
+periodMultiple_HTF1 := periodMultiple_HTF1 > 1 ? periodMultiple_HTF1 : 1
+periodMultiple_HTF2 := periodMultiple_HTF2 > 1 ? periodMultiple_HTF2 : 1
+
+// 信号显示
+showReverse_0 = input.bool(false, '当前周期的反转符号', group = '当前周期')
+showReverse_line_0 = input.bool(true, '当前周期的辅助判断横线', group = '当前周期')
+showReverse_1 = input.bool(true, 'HTF_1的反转符号', group = 'HTF_1')
+showReverse_line_1 = input.bool(true, 'HTF_1的辅助判断横线', group = 'HTF_1')
+showEntrySignal_1 = input.bool(true, 'HTF_1的入场信号', group = 'HTF_1')
+showReverse_2 = input.bool(true, 'HTF_2的反转符号', group = 'HTF_2')
+showReverse_line_2 = input.bool(true, 'HTF_2的辅助判断横线', group = 'HTF_2')
+showEntrySignal_2 = input.bool(false, 'HTF_2的入场信号', group = 'HTF_2')
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART2-变量声明】
+type barData
+    // 计算数据
+    float ldh = na              // 计算反转用，last down high，最近一根下跌K线的HIGH
+    float lul = na              // 计算反转用
+    float ldl = na              // 计算传递用
+    float luh = na              // 计算传递用
+    int lowest = 0              // 计算偏移用
+    int highest = 0             // 计算偏移用
+    // 标记index数据，用于标记反转所在位置，需要加上offset，即lowest/highest的量
+    int ldlIndex = na           // 标记反转位置index，last down low index，HTF周期最近一根下跌K线在当前周期的low所在的位置
+    int luhIndex = na           // 标记反转位置index
+    string lastReverseType = na // last reverse type，最近一次反转情况，'up'/'down'
+    bool isNewBar = true        // K线是否更新
+
+type signalData                 // 【局部变量】反转信号
+    bool ru = false             // reverse up，向上反转
+    bool rd = false             // reverse down 向下反转
+
+type hLineData                  // 绘制辅助判断线
+    float hLinePrice_ldh = na   // 寻找向上反转用，价格，y
+    float hLinePrice_lul = na   // 寻找向下反转用，价格，y
+    int hLineIndex_ldh = na     // 寻找向上反转用，index，x
+    int hLineIndex_lul = na     // 寻找向下反转用，index，x
+    line hLine_ldh = na         // 寻找向上反转用，画线
+    line hLine_lul = na         // 寻找向下反转用，画线
+
+var barData_0 = barData.new()
+var barData_1 = barData.new()
+var barData_2 = barData.new()
+signalData_0 = signalData.new()
+signalData_1 = signalData.new()
+signalData_2 = signalData.new()
+var hLineData_0 = hLineData.new()
+var hLineData_1 = hLineData.new()
+var hLineData_2 = hLineData.new()
+
+barData_1.lowest := ta.lowestbars(low[1], periodMultiple_HTF1)
+barData_1.highest := ta.highestbars(high[1], periodMultiple_HTF1)
+barData_2.lowest := ta.lowestbars(low[1], periodMultiple_HTF2)
+barData_2.highest := ta.highestbars(high[1], periodMultiple_HTF2)
+
+barData_0.isNewBar := barstate.isconfirmed
+barData_1.isNewBar := ta.change(time(higherTimeframe_1)) != 0
+barData_2.isNewBar := ta.change(time(higherTimeframe_2)) != 0
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART3-自定义函数】
+// 核心计算函数
+findReverseSignal(higherTimeframe, pullbackType, lastDownHigh, lastUpLow, lastDownLow, lastUpHigh, lastReverseType) =>
+    //更新K线数据
+    float _high = na
+    float _low = na
+    float _close = na
+    if higherTimeframe != nowTimeFrame
+        [higherHigh, higherLow, higherClose] = request.security(syminfo.tickerid,
+                                                                 higherTimeframe,
+                                                                 [high[1], low[1], close[1]],
+                                                                 lookahead=barmerge.lookahead_on)
+        _high  := higherHigh
+        _low   := higherLow
+        _close := higherClose
+    else
+        _high := high[0]
+        _low := low[0]
+        _close := close[0]
+    //传入参数
+    float _lastDownHigh = lastDownHigh
+    float _lastUpLow = lastUpLow
+    float _lastDownLow = lastDownLow
+    float _lastUpHigh = lastUpHigh
+    string _lastReverseType = lastReverseType
+    //初始化反转信号
+    bool _reverseUpSignal = false
+    bool _reverseDownSignal = false
+    // 寻找上反转或下跌K线
+    if _lastReverseType != 'up'
+        //上反转K线
+        if _close > _lastDownHigh or na(_lastDownHigh)
+            _lastUpLow := _low
+            _lastUpHigh := _high
+            _lastReverseType := 'up'
+            _reverseUpSignal := true
+        //下跌K线
+        else if not na(_lastReverseType)
+            if pullbackType == '1'
+                if _low < _lastDownLow and not na(_lastDownLow)
+                    _lastDownLow := _low
+                    _lastDownHigh := _high
+
+            if pullbackType == '2'
+                if _close < _lastDownLow and not na(_lastDownLow)
+                    _lastDownLow := _low
+                    _lastDownHigh := _high
+    // 寻找下反转或上涨K线
+    else if _lastReverseType != 'down'
+        //下反转K线
+        if _close < _lastUpLow or na(_lastUpLow)
+            _lastDownLow := _low
+            _lastDownHigh := _high
+            _lastReverseType := 'down'
+            _reverseDownSignal := true
+        //上涨K线
+        else if not na(_lastReverseType)
+            if pullbackType == '1'
+                if _high > _lastUpHigh and not na(_lastUpHigh)
+                    _lastUpLow := _low
+                    _lastUpHigh := _high
+            if pullbackType == '2'
+                if _close > _lastUpHigh and not na(_lastUpHigh)
+                    _lastUpLow := _low
+                    _lastUpHigh := _high
+    [_reverseUpSignal, _reverseDownSignal, _lastDownHigh, _lastUpLow, _lastDownLow, _lastUpHigh, _lastReverseType]
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART4-核心计算】
+// 【4.0 TF】
+if barData_0.isNewBar
+    [reverseUpSignal_val, reverseDownSignal_val,
+     lastDownHigh_val, lastUpLow_val,
+     lastDownLow_val, lastUpHigh_val,
+     lastReverseType_val] = findReverseSignal(nowTimeFrame,
+                                                 pullbackType,
+                                                 barData_0.ldh,
+                                                 barData_0.lul,
+                                                 barData_0.ldl,
+                                                 barData_0.luh,
+                                                 barData_0.lastReverseType
+                                                 )
+    // 更新变量
+    signalData_0.ru := reverseUpSignal_val
+    signalData_0.rd := reverseDownSignal_val
+    // 更新全局变量
+    barData_0.lastReverseType := lastReverseType_val
+    // 计算K线反转
+    if not(barData_0.ldh == lastDownHigh_val)       // 情况1：下反转，情况2：向下传递
+        barData_0.ldh := lastDownHigh_val
+        barData_0.ldl := lastDownLow_val
+        barData_0.ldlIndex := bar_index + barData_0.lowest
+        hLineData_0.hLineIndex_ldh := bar_index + barData_0.highest
+        hLineData_0.hLinePrice_ldh := high[0 - barData_0.highest]
+        hLineData_0.hLinePrice_lul := low[0 - barData_0.lowest]
+        barData_0.luh := (signalData_0.rd and lastUpHigh_val < high) ? high :lastUpHigh_val
+        barData_0.luhIndex := (signalData_0.rd and lastUpHigh_val < high) ? bar_index : barData_0.luhIndex
+    else if not(barData_0.lul == lastUpLow_val)     // 情况1：上反转，情况2：向上传递
+        barData_0.lul := lastUpLow_val
+        barData_0.luh := lastUpHigh_val
+        barData_0.luhIndex := bar_index + barData_0.highest
+        hLineData_0.hLineIndex_lul := bar_index + barData_0.lowest
+        hLineData_0.hLinePrice_ldh := high[0 - barData_0.highest]
+        hLineData_0.hLinePrice_lul := low[0 - barData_0.lowest]
+        barData_0.ldl := (signalData_0.ru and lastDownLow_val > low) ? low : lastDownLow_val
+        barData_0.ldlIndex := (signalData_0.ru and lastDownLow_val > low) ? bar_index : barData_0.ldlIndex
+                
+ // 【4.1 HTF_1】
+if barData_0.isNewBar and barData_1.isNewBar
+    [reverseUpSignal_val, reverseDownSignal_val,
+     lastDownHigh_val, lastUpLow_val,
+     lastDownLow_val, lastUpHigh_val,
+     lastReverseType_val] = findReverseSignal(higherTimeframe_1,
+                                                 pullbackType,
+                                                 barData_1.ldh,
+                                                 barData_1.lul,
+                                                 barData_1.ldl,
+                                                 barData_1.luh,
+                                                 barData_1.lastReverseType
+                                                 )
+    signalData_1.ru := reverseUpSignal_val
+    signalData_1.rd := reverseDownSignal_val
+    // 更新全局变量
+    barData_1.lastReverseType := lastReverseType_val
+    // 计算反转K线位置
+    if not(barData_1.ldh == lastDownHigh_val)
+        barData_1.ldh := lastDownHigh_val
+        barData_1.ldl := lastDownLow_val
+        barData_1.ldlIndex := bar_index - 1 + barData_1.lowest
+        hLineData_1.hLineIndex_ldh := bar_index - 1 + barData_1.highest
+        hLineData_1.hLinePrice_ldh := high[1 - barData_1.highest]
+        hLineData_1.hLinePrice_lul := low[1 - barData_1.lowest]
+    else if not(barData_1.lul == lastUpLow_val)
+        barData_1.lul := lastUpLow_val
+        barData_1.luh := lastUpHigh_val
+        barData_1.luhIndex := bar_index - 1 + barData_1.highest
+        hLineData_1.hLineIndex_lul := bar_index - 1 + barData_1.lowest
+        hLineData_1.hLinePrice_ldh := high[1 - barData_1.highest]
+        hLineData_1.hLinePrice_lul := low[1 - barData_1.lowest]
+
+ // 【4.2 HTF_2】
+if barData_0.isNewBar and barData_2.isNewBar
+    [reverseUpSignal_val, reverseDownSignal_val,
+     lastDownHigh_val, lastUpLow_val,
+     lastDownLow_val, lastUpHigh_val,
+     lastReverseType_val] = findReverseSignal(higherTimeframe_2,
+                                                 pullbackType,
+                                                 barData_2.ldh,
+                                                 barData_2.lul,
+                                                 barData_2.ldl,
+                                                 barData_2.luh,
+                                                 barData_2.lastReverseType
+                                                 )
+
+    signalData_2.ru := reverseUpSignal_val
+    signalData_2.rd := reverseDownSignal_val
+    // 更新全局变量
+    barData_2.lastReverseType := lastReverseType_val
+    // 计算反转K线位置
+    if not(barData_2.ldh == lastDownHigh_val)
+        barData_2.ldh := lastDownHigh_val
+        barData_2.ldl := lastDownLow_val
+        barData_2.ldlIndex := bar_index - 1 + barData_2.lowest
+        hLineData_2.hLineIndex_ldh := bar_index - 1 + barData_2.highest
+        hLineData_2.hLinePrice_ldh := high[1 - barData_2.highest]
+        hLineData_2.hLinePrice_lul := low[1 - barData_2.lowest]
+    else if not(barData_2.lul == lastUpLow_val)
+        barData_2.lul := lastUpLow_val
+        barData_2.luh := lastUpHigh_val
+        barData_2.luhIndex := bar_index - 1 + barData_2.highest
+        hLineData_2.hLineIndex_lul := bar_index - 1 + barData_2.lowest
+        hLineData_2.hLinePrice_ldh := high[1 - barData_2.highest]
+        hLineData_2.hLinePrice_lul := low[1 - barData_2.lowest]
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART5-绘图】
+// 【5.0 HTF_0】
+// 绘制当前周期的K线反转信号
+if showReverse_0
+    if signalData_0.ru
+        label.new(barData_0.ldlIndex,
+                     y=low,
+                     yloc=yloc.belowbar,
+                     color=color.new(color.green, 70),
+                     text='',
+                     style=label.style_label_center,
+                     size=size.tiny
+                     )
+    else if signalData_0.rd
+        label.new(barData_0.luhIndex,
+                     y=high,
+                     yloc=yloc.abovebar,
+                     color=color.new(color.red, 70),
+                     text='',
+                     style=label.style_label_center,
+                     size=size.tiny
+                     )
+
+// 绘制当前周期反转判断横线
+if showReverse_line_0
+    line.delete(hLineData_0.hLine_ldh)
+    line.delete(hLineData_0.hLine_lul)
+    hLineData_0.hLine_ldh := line.new(barData_0.lastReverseType == 'down' ? hLineData_0.hLineIndex_ldh : na,
+                                         hLineData_0.hLinePrice_ldh,
+                                         barData_0.lastReverseType == 'down' ?  bar_index + 5 : na,
+                                         hLineData_0.hLinePrice_ldh,
+                                         color=color.new(color.blue, 50),
+                                         style=line.style_dotted,
+                                         width=2
+                                         )
+    hLineData_0.hLine_lul := line.new(barData_0.lastReverseType == 'up' ? hLineData_0.hLineIndex_lul : na,
+                                         hLineData_0.hLinePrice_lul,
+                                         barData_0.lastReverseType == 'up' ?  bar_index + 5 : na,
+                                         hLineData_0.hLinePrice_lul,
+                                         color=color.new(color.blue, 50),
+                                         style=line.style_dotted,
+                                         width=2
+                                         )
+
+
+// 【5.1 HTF_1】
+// 绘制HTF_1的K线反转信号
+if barData_1.isNewBar and showReverse_1 and periodMultiple_HTF1 > 1
+    if signalData_1.ru
+        label.new(barData_1.ldlIndex,
+                     y=low,
+                     yloc=yloc.belowbar,
+                     color=color.new(color.green, 0),
+                     text='',
+                     style=label.style_square,
+                     size=size.small
+                     )
+    else if signalData_1.rd
+        label.new(barData_1.luhIndex,
+                     y=high,
+                     yloc=yloc.abovebar,
+                     color=color.new(color.red, 0),
+                     text='',
+                     style=label.style_square,
+                     size=size.small
+                     )
+
+// 绘制HTF_1入场信号
+if showEntrySignal_1 and periodMultiple_HTF1 > 1
+    if signalData_1.ru
+        label.new(x = bar_index,
+             y = low,
+             yloc = yloc.belowbar,
+             text = "",
+             style = label.style_triangleup,
+             color = color.new(color.green, 0),
+             textcolor = color.white,
+             size = size.tiny
+             )
+    if signalData_1.rd
+        label.new(x = bar_index,
+             y = high,
+             yloc = yloc.abovebar,
+             text = "",
+             style = label.style_triangledown,
+             color = color.new(color.red, 0),
+             textcolor = color.white,
+             size = size.tiny
+             )
+
+// 绘制HTF_1反转判断横线
+if showReverse_line_1
+    line.delete(hLineData_1.hLine_ldh)
+    line.delete(hLineData_1.hLine_lul)
+    hLineData_1.hLine_ldh := line.new(barData_1.lastReverseType == 'down' ? hLineData_1.hLineIndex_ldh : na,
+                                         hLineData_1.hLinePrice_ldh,
+                                         barData_1.lastReverseType == 'down' ?  bar_index + 5 : na,
+                                         hLineData_1.hLinePrice_ldh,
+                                         color=color.new(color.red, 50),
+                                         style=line.style_dotted,
+                                         width=2
+                                         )
+    hLineData_1.hLine_lul := line.new(barData_1.lastReverseType == 'up' ? hLineData_1.hLineIndex_lul : na,
+                                         hLineData_1.hLinePrice_lul,
+                                         barData_1.lastReverseType == 'up' ?  bar_index + 5 : na,
+                                         hLineData_1.hLinePrice_lul,
+                                         color=color.new(color.red, 50),
+                                         style=line.style_dotted,
+                                         width=2
+                                         )
+
+
+// 【5.2 HTF_2】
+// 绘制HTF_2的K线反转信号
+if barData_2.isNewBar and showReverse_2 and periodMultiple_HTF2 > 1
+    if signalData_2.ru
+        label.new(barData_2.ldlIndex,
+                     y=low,
+                     yloc=yloc.belowbar,
+                     color=color.new(color.green, 0),
+                     text='',
+                     style=label.style_cross,
+                     size=size.tiny
+                     )
+    else if signalData_2.rd
+        label.new(barData_2.luhIndex,
+                     y=high,
+                     yloc=yloc.abovebar,
+                     color=color.new(color.red, 0),
+                     text='',
+                     style=label.style_cross,
+                     size=size.tiny
+                     )
+
+// 绘制HTF_2入场信号
+if showEntrySignal_2 and periodMultiple_HTF2 > 1
+    if signalData_2.ru
+        label.new(x = bar_index,
+             y = low,
+             yloc = yloc.belowbar,
+             text = "",
+             style = label.style_label_up,
+             color = color.new(color.green, 0),
+             textcolor = color.white,
+             size = size.tiny
+             )
+    if signalData_2.rd
+        label.new(x = bar_index,
+             y = high,
+             yloc = yloc.abovebar,
+             text = "",
+             style = label.style_label_down,
+             color = color.new(color.red, 0),
+             textcolor = color.white,
+             size = size.tiny
+             )
+
+// 绘制HTF_2反转判断横线
+if showReverse_line_2
+    line.delete(hLineData_2.hLine_ldh)
+    line.delete(hLineData_2.hLine_lul)
+    hLineData_2.hLine_ldh := line.new(barData_2.lastReverseType == 'down' ? hLineData_2.hLineIndex_ldh : na,
+                                         hLineData_2.hLinePrice_ldh,
+                                         barData_2.lastReverseType == 'down' ?  bar_index + 5 : na,
+                                         hLineData_2.hLinePrice_ldh,
+                                         color=color.new(color.orange, 50),
+                                         style=line.style_dotted,
+                                         width=2
+                                         )
+    hLineData_2.hLine_lul := line.new(barData_2.lastReverseType == 'up' ? hLineData_2.hLineIndex_lul : na,
+                                         hLineData_2.hLinePrice_lul,
+                                         barData_2.lastReverseType == 'up' ?  bar_index + 5 : na,
+                                         hLineData_2.hLinePrice_lul,
+                                         color=color.new(color.orange, 50),
+                                         style=line.style_dotted,
+                                         width=2
+                                         )
