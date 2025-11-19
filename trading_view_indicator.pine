@@ -1,114 +1,165 @@
-// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ============================================================================
+// Pine Script® 라이선스: Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
 // © xavier_2sy
-// 【指标说明】
-// 保留原指标的两种模式，模式1为使用影线突破更新下一根上涨/下跌K线并进行传递，模式2使用实体突破影线进行更新。
-// 解决了原指标重绘的问题，故在少数地方结果与原指标不同。
-// 【更新】将逻辑封装为自定义函数，未来方便添加新的HTF
-// 【更新】优化逻辑提升运行速度
-// 【更新】优化变量命名，方便未来增加多个周期的开发
-// 【更新】增加反转符号
-// 【更新】增加反转判断横线
-// 【更新】增加HTF_2，反转，入场，判断横线
-// 【更新】更新指标输入面板
-// 【更新】更新了timeframe 大于 htf_timeframe时可能出现的BUG问题，虽然此时指标无法作为参考。
-// 2025/10/01
-// 【更新】增加当前周期，方便做量化时辅助判断
-// 【更新】增加优化运行逻辑，提升速度
-// 【更新】当HTF>当前TF时，不再显示信号
-// 2025/10/13
-// 【更新】整体重构，使用dataclasses对变量进行重新规划，方便后续开发和维护
-// 【更新】更新显示逻辑，入场信号提前1根K线显示，方便回测开发
-// 【其他说明】该指标使用卡蛋的逻辑，但布局借鉴其他收费指标作者。受人恩惠，不应影响该作者指标销售，因此警报功能暂不予以加入。需要请自行开发，几行代码的事很简单。
-// 【更新】修复当前周期反转点显示错误的BUG
-// 【更新】优化当前周期反转点逻辑，当反包K线反包的同时又同时突破了了ldl或luh时，同步更新ldl和luh，该优化是为了后续量化开发中可以更精准的选择止盈止损点。只修改的当前周期，在HTF1和HTF2中未做修改。
+// ============================================================================
+//
+// 【지표 설명】
+// 이 지표는 다중 타임프레임에서 K선(캔들) 반전 패턴을 감지하는 기술적 분석 도구입니다.
+//
+// 주요 특징:
+// - 2가지 K선 업데이트 모드 지원
+//   * 모드 1: 그림자(꼬리) 돌파를 기준으로 상승/하락 K선 업데이트 및 전달
+//   * 모드 2: 실체(몸통) 돌파를 기준으로 K선 업데이트
+// - 리페인팅(Repainting) 문제 해결: 과거 신호가 변경되지 않음
+// - 3개의 타임프레임 동시 모니터링 (현재, HTF_1, HTF_2)
+//
+// 【업데이트 이력】
+// - 로직을 사용자 정의 함수로 캡슐화하여 향후 HTF 추가 용이
+// - 알고리즘 최적화로 실행 속도 향상
+// - 변수명 개선으로 다중 주기 개발 편의성 증대
+// - 반전 심볼 시각화 추가
+// - 반전 판단용 수평선 추가
+// - HTF_2 타임프레임, 반전, 입장, 판단선 기능 추가
+// - 입력 패널 UI 개선
+// - 현재 타임프레임이 HTF보다 클 때 발생하는 버그 수정
+//   (이 경우 지표는 참고용으로 부적합)
+//
+// 2025/10/01 업데이트:
+// - 현재 주기 추가 (퀀트 트레이딩 시 보조 판단용)
+// - 실행 로직 최적화로 속도 향상
+// - HTF > 현재 TF일 때 신호 미표시 처리
+//
+// 2025/10/13 업데이트:
+// - 전체 리팩토링: dataclasses를 사용한 변수 재구성
+// - 디스플레이 로직 업데이트: 입장 신호를 1봉 앞당겨 표시 (백테스팅 개발 편의)
+// - 현재 주기 반전점 표시 버그 수정
+// - 현재 주기 반전점 로직 최적화:
+//   * 반포 K선이 반포하면서 동시에 ldl 또는 luh를 돌파할 때 ldl/luh 동기 업데이트
+//   * 향후 퀀트 개발에서 더 정확한 익절/손절 지점 선택 가능
+//   * 현재 주기만 수정, HTF1/HTF2는 미적용
+//
+// 【기타 설명】
+// - 이 지표는 "카드(卡蛋)" 로직 기반이지만, 레이아웃은 다른 유료 지표 참고
+// - 경의를 표하여 해당 저자의 판매에 영향을 주지 않기 위해 알림 기능은 미포함
+// - 알림 기능 필요 시 직접 개발 가능 (몇 줄의 코드로 간단히 구현 가능)
 
 //@version=6
-indicator("卡蛋K线反转-V5-发布版", overlay=true, dynamic_requests=true, max_bars_back=500, max_labels_count=300, max_lines_count = 100)
+indicator("카드 K선 반전-V5", overlay=true, dynamic_requests=true, max_bars_back=500, max_labels_count=300, max_lines_count = 100)
 
 
 ////////////////////////////////////////////////////////////////////////////////////////
-// 【PART1-输入参数】
-// 模式1为使用影线突破更新下一根上涨/下跌K线并进行传递，模式2使用实体突破影线进行更新
-pullbackType = input.string("1", "K线更新方式", ["1", "2"], group = '当前周期')
+// 【PART1-입력 파라미터】
+////////////////////////////////////////////////////////////////////////////////////////
 
-// 周期
-nowTimeFrame = str.tostring(timeframe.in_seconds() / 60)
-higherTimeframe_1 = input.timeframe("15", "HTF_1", group = 'HTF_1')
-higherTimeframe_2 = input.timeframe("5", "HTF_2", group = 'HTF_2')
+// K선 업데이트 방식 선택
+// 모드 1: 그림자(꼬리) 돌파로 다음 상승/하락 K선 업데이트 및 전달
+// 모드 2: 실체(몸통) 돌파로 그림자를 기준으로 업데이트
+pullbackType = input.string("1", "K선 업데이트 방식", ["1", "2"], group = '당前周期')
 
-// HTF相对当前周期的倍数关系, 小于1时为1
+// 타임프레임 설정
+nowTimeFrame = str.tostring(timeframe.in_seconds() / 60)  // 현재 타임프레임(분 단위)
+higherTimeframe_1 = input.timeframe("15", "HTF_1", group = 'HTF_1')  // 상위 타임프레임 1
+higherTimeframe_2 = input.timeframe("5", "HTF_2", group = 'HTF_2')   // 상위 타임프레임 2
+
+// HTF와 현재 주기의 배수 관계 계산 (1보다 작으면 1로 설정)
 var int periodMultiple_HTF1 = timeframe.in_seconds(higherTimeframe_1) / timeframe.in_seconds()
 var int periodMultiple_HTF2 = timeframe.in_seconds(higherTimeframe_2) / timeframe.in_seconds()
 periodMultiple_HTF1 := periodMultiple_HTF1 > 1 ? periodMultiple_HTF1 : 1
 periodMultiple_HTF2 := periodMultiple_HTF2 > 1 ? periodMultiple_HTF2 : 1
 
-// 信号显示
-showReverse_0 = input.bool(false, '当前周期的反转符号', group = '当前周期')
-showReverse_line_0 = input.bool(true, '当前周期的辅助判断横线', group = '当前周期')
-showReverse_1 = input.bool(true, 'HTF_1的反转符号', group = 'HTF_1')
-showReverse_line_1 = input.bool(true, 'HTF_1的辅助判断横线', group = 'HTF_1')
-showEntrySignal_1 = input.bool(true, 'HTF_1的入场信号', group = 'HTF_1')
-showReverse_2 = input.bool(true, 'HTF_2的反转符号', group = 'HTF_2')
-showReverse_line_2 = input.bool(true, 'HTF_2的辅助判断横线', group = 'HTF_2')
-showEntrySignal_2 = input.bool(false, 'HTF_2的入场信号', group = 'HTF_2')
+// 신호 표시 옵션
+showReverse_0 = input.bool(false, '현재 주기의 반전 심볼', group = '당前周期')
+showReverse_line_0 = input.bool(true, '현재 주기의 보조 판단 수평선', group = '당前周期')
+showReverse_1 = input.bool(true, 'HTF_1의 반전 심볼', group = 'HTF_1')
+showReverse_line_1 = input.bool(true, 'HTF_1의 보조 판단 수평선', group = 'HTF_1')
+showEntrySignal_1 = input.bool(true, 'HTF_1의 진입 신호', group = 'HTF_1')
+showReverse_2 = input.bool(true, 'HTF_2의 반전 심볼', group = 'HTF_2')
+showReverse_line_2 = input.bool(true, 'HTF_2의 보조 판단 수평선', group = 'HTF_2')
+showEntrySignal_2 = input.bool(false, 'HTF_2의 진입 신호', group = 'HTF_2')
 
 
 ////////////////////////////////////////////////////////////////////////////////////////
-// 【PART2-变量声明】
+// 【PART2-변수 선언】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// K선 데이터 구조체
+// 반전 계산 및 위치 추적에 필요한 모든 데이터 포함
 type barData
-    // 计算数据
-    float ldh = na              // 计算反转用，last down high，最近一根下跌K线的HIGH
-    float lul = na              // 计算反转用
-    float ldl = na              // 计算传递用
-    float luh = na              // 计算传递用
-    int lowest = 0              // 计算偏移用
-    int highest = 0             // 计算偏移用
-    // 标记index数据，用于标记反转所在位置，需要加上offset，即lowest/highest的量
-    int ldlIndex = na           // 标记反转位置index，last down low index，HTF周期最近一根下跌K线在当前周期的low所在的位置
-    int luhIndex = na           // 标记反转位置index
-    string lastReverseType = na // last reverse type，最近一次反转情况，'up'/'down'
-    bool isNewBar = true        // K线是否更新
+    // 계산용 데이터
+    float ldh = na              // Last Down High - 최근 하락 K선의 고가 (상승 반전 계산용)
+    float lul = na              // Last Up Low - 최근 상승 K선의 저가 (하락 반전 계산용)
+    float ldl = na              // Last Down Low - 최근 하락 K선의 저가 (전달용)
+    float luh = na              // Last Up High - 최근 상승 K선의 고가 (전달용)
+    int lowest = 0              // 최저점 오프셋 계산용
+    int highest = 0             // 최고점 오프셋 계산용
 
-type signalData                 // 【局部变量】反转信号
-    bool ru = false             // reverse up，向上反转
-    bool rd = false             // reverse down 向下反转
+    // 인덱스 마킹 데이터 (반전 위치 표시용, offset 포함)
+    int ldlIndex = na           // Last Down Low Index - HTF 주기 최근 하락 K선의 저가 위치
+    int luhIndex = na           // Last Up High Index - HTF 주기 최근 상승 K선의 고가 위치
+    string lastReverseType = na // 최근 반전 유형: 'up' 또는 'down'
+    bool isNewBar = true        // K선 업데이트 여부
 
-type hLineData                  // 绘制辅助判断线
-    float hLinePrice_ldh = na   // 寻找向上反转用，价格，y
-    float hLinePrice_lul = na   // 寻找向下反转用，价格，y
-    int hLineIndex_ldh = na     // 寻找向上反转用，index，x
-    int hLineIndex_lul = na     // 寻找向下反转用，index，x
-    line hLine_ldh = na         // 寻找向上反转用，画线
-    line hLine_lul = na         // 寻找向下反转用，画线
+// 신호 데이터 구조체
+// 로컬 변수로 사용되는 반전 신호
+type signalData
+    bool ru = false             // Reverse Up - 상승 반전 신호
+    bool rd = false             // Reverse Down - 하락 반전 신호
 
-var barData_0 = barData.new()
-var barData_1 = barData.new()
-var barData_2 = barData.new()
-signalData_0 = signalData.new()
-signalData_1 = signalData.new()
-signalData_2 = signalData.new()
-var hLineData_0 = hLineData.new()
-var hLineData_1 = hLineData.new()
-var hLineData_2 = hLineData.new()
+// 수평선 데이터 구조체
+// 보조 판단선 그리기용
+type hLineData
+    float hLinePrice_ldh = na   // 상승 반전 찾기용 가격 (y좌표)
+    float hLinePrice_lul = na   // 하락 반전 찾기용 가격 (y좌표)
+    int hLineIndex_ldh = na     // 상승 반전 찾기용 인덱스 (x좌표)
+    int hLineIndex_lul = na     // 하락 반전 찾기용 인덱스 (x좌표)
+    line hLine_ldh = na         // 상승 반전 찾기용 수평선 객체
+    line hLine_lul = na         // 하락 반전 찾기용 수평선 객체
 
+// 각 타임프레임별 데이터 인스턴스 생성
+var barData_0 = barData.new()      // 현재 타임프레임
+var barData_1 = barData.new()      // HTF_1
+var barData_2 = barData.new()      // HTF_2
+signalData_0 = signalData.new()    // 현재 타임프레임 신호
+signalData_1 = signalData.new()    // HTF_1 신호
+signalData_2 = signalData.new()    // HTF_2 신호
+var hLineData_0 = hLineData.new()  // 현재 타임프레임 수평선
+var hLineData_1 = hLineData.new()  // HTF_1 수평선
+var hLineData_2 = hLineData.new()  // HTF_2 수평선
+
+// 최저/최고 오프셋 계산 (이전 봉 기준)
 barData_1.lowest := ta.lowestbars(low[1], periodMultiple_HTF1)
 barData_1.highest := ta.highestbars(high[1], periodMultiple_HTF1)
 barData_2.lowest := ta.lowestbars(low[1], periodMultiple_HTF2)
 barData_2.highest := ta.highestbars(high[1], periodMultiple_HTF2)
 
-barData_0.isNewBar := barstate.isconfirmed
-barData_1.isNewBar := ta.change(time(higherTimeframe_1)) != 0
-barData_2.isNewBar := ta.change(time(higherTimeframe_2)) != 0
+// K선 업데이트 확인
+barData_0.isNewBar := barstate.isconfirmed           // 현재 봉 확정
+barData_1.isNewBar := ta.change(time(higherTimeframe_1)) != 0  // HTF_1 새 봉
+barData_2.isNewBar := ta.change(time(higherTimeframe_2)) != 0  // HTF_2 새 봉
 
 
 ////////////////////////////////////////////////////////////////////////////////////////
-// 【PART3-自定义函数】
-// 核心计算函数
+// 【PART3-사용자 정의 함수】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 핵심 반전 신호 탐지 함수
+// 지정된 타임프레임에서 상승/하락 반전을 감지하고 관련 데이터 업데이트
+//
+// 파라미터:
+//   higherTimeframe: 분석할 타임프레임
+//   pullbackType: K선 업데이트 방식 ('1' = 그림자, '2' = 실체)
+//   lastDownHigh, lastUpLow, lastDownLow, lastUpHigh: 이전 K선 데이터
+//   lastReverseType: 이전 반전 유형
+//
+// 반환값: [상승반전신호, 하락반전신호, ldh, lul, ldl, luh, 반전유형]
 findReverseSignal(higherTimeframe, pullbackType, lastDownHigh, lastUpLow, lastDownLow, lastUpHigh, lastReverseType) =>
-    //更新K线数据
+    // K선 데이터 업데이트
     float _high = na
     float _low = na
     float _close = na
+
+    // HTF 데이터 가져오기 (현재 타임프레임이 아닌 경우)
     if higherTimeframe != nowTimeFrame
         [higherHigh, higherLow, higherClose] = request.security(syminfo.tickerid,
                                                                  higherTimeframe,
@@ -118,62 +169,78 @@ findReverseSignal(higherTimeframe, pullbackType, lastDownHigh, lastUpLow, lastDo
         _low   := higherLow
         _close := higherClose
     else
+        // 현재 타임프레임 데이터 사용
         _high := high[0]
         _low := low[0]
         _close := close[0]
-    //传入参数
+
+    // 파라미터 초기화
     float _lastDownHigh = lastDownHigh
     float _lastUpLow = lastUpLow
     float _lastDownLow = lastDownLow
     float _lastUpHigh = lastUpHigh
     string _lastReverseType = lastReverseType
-    //初始化反转信号
+
+    // 반전 신호 초기화
     bool _reverseUpSignal = false
     bool _reverseDownSignal = false
-    // 寻找上反转或下跌K线
+
+    // === 상승 반전 또는 하락 K선 탐색 ===
     if _lastReverseType != 'up'
-        //上反转K线
+        // 상승 반전 K선 조건: 종가가 이전 하락 K선의 고가를 돌파
         if _close > _lastDownHigh or na(_lastDownHigh)
             _lastUpLow := _low
             _lastUpHigh := _high
             _lastReverseType := 'up'
             _reverseUpSignal := true
-        //下跌K线
+
+        // 하락 K선 업데이트 (반전 없이 하락 지속)
         else if not na(_lastReverseType)
             if pullbackType == '1'
+                // 모드 1: 그림자(저가) 돌파 시 업데이트
                 if _low < _lastDownLow and not na(_lastDownLow)
                     _lastDownLow := _low
                     _lastDownHigh := _high
 
             if pullbackType == '2'
+                // 모드 2: 실체(종가) 돌파 시 업데이트
                 if _close < _lastDownLow and not na(_lastDownLow)
                     _lastDownLow := _low
                     _lastDownHigh := _high
-    // 寻找下反转或上涨K线
+
+    // === 하락 반전 또는 상승 K선 탐색 ===
     else if _lastReverseType != 'down'
-        //下反转K线
+        // 하락 반전 K선 조건: 종가가 이전 상승 K선의 저가를 돌파
         if _close < _lastUpLow or na(_lastUpLow)
             _lastDownLow := _low
             _lastDownHigh := _high
             _lastReverseType := 'down'
             _reverseDownSignal := true
-        //上涨K线
+
+        // 상승 K선 업데이트 (반전 없이 상승 지속)
         else if not na(_lastReverseType)
             if pullbackType == '1'
+                // 모드 1: 그림자(고가) 돌파 시 업데이트
                 if _high > _lastUpHigh and not na(_lastUpHigh)
                     _lastUpLow := _low
                     _lastUpHigh := _high
+
             if pullbackType == '2'
+                // 모드 2: 실체(종가) 돌파 시 업데이트
                 if _close > _lastUpHigh and not na(_lastUpHigh)
                     _lastUpLow := _low
                     _lastUpHigh := _high
+
     [_reverseUpSignal, _reverseDownSignal, _lastDownHigh, _lastUpLow, _lastDownLow, _lastUpHigh, _lastReverseType]
 
 
 ////////////////////////////////////////////////////////////////////////////////////////
-// 【PART4-核心计算】
-// 【4.0 TF】
+// 【PART4-핵심 계산】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 【4.0 현재 타임프레임 (TF)】
 if barData_0.isNewBar
+    // 반전 신호 탐지 함수 호출
     [reverseUpSignal_val, reverseDownSignal_val,
      lastDownHigh_val, lastUpLow_val,
      lastDownLow_val, lastUpHigh_val,
@@ -185,33 +252,42 @@ if barData_0.isNewBar
                                                  barData_0.luh,
                                                  barData_0.lastReverseType
                                                  )
-    // 更新变量
+    // 신호 변수 업데이트
     signalData_0.ru := reverseUpSignal_val
     signalData_0.rd := reverseDownSignal_val
-    // 更新全局变量
+
+    // 전역 변수 업데이트
     barData_0.lastReverseType := lastReverseType_val
-    // 计算K线反转
-    if not(barData_0.ldh == lastDownHigh_val)       // 情况1：下反转，情况2：向下传递
+
+    // K선 반전 계산
+    // 경우 1: 하락 반전 또는 하락 전달
+    if not(barData_0.ldh == lastDownHigh_val)
         barData_0.ldh := lastDownHigh_val
         barData_0.ldl := lastDownLow_val
         barData_0.ldlIndex := bar_index + barData_0.lowest
         hLineData_0.hLineIndex_ldh := bar_index + barData_0.highest
         hLineData_0.hLinePrice_ldh := high[0 - barData_0.highest]
         hLineData_0.hLinePrice_lul := low[0 - barData_0.lowest]
+        // 하락 반전 시 반포 K선이 고가도 돌파했는지 확인
         barData_0.luh := (signalData_0.rd and lastUpHigh_val < high) ? high :lastUpHigh_val
         barData_0.luhIndex := (signalData_0.rd and lastUpHigh_val < high) ? bar_index : barData_0.luhIndex
-    else if not(barData_0.lul == lastUpLow_val)     // 情况1：上反转，情况2：向上传递
+
+    // 경우 2: 상승 반전 또는 상승 전달
+    else if not(barData_0.lul == lastUpLow_val)
         barData_0.lul := lastUpLow_val
         barData_0.luh := lastUpHigh_val
         barData_0.luhIndex := bar_index + barData_0.highest
         hLineData_0.hLineIndex_lul := bar_index + barData_0.lowest
         hLineData_0.hLinePrice_ldh := high[0 - barData_0.highest]
         hLineData_0.hLinePrice_lul := low[0 - barData_0.lowest]
+        // 상승 반전 시 반포 K선이 저가도 돌파했는지 확인
         barData_0.ldl := (signalData_0.ru and lastDownLow_val > low) ? low : lastDownLow_val
         barData_0.ldlIndex := (signalData_0.ru and lastDownLow_val > low) ? bar_index : barData_0.ldlIndex
-                
- // 【4.1 HTF_1】
+
+
+// 【4.1 상위 타임프레임 1 (HTF_1)】
 if barData_0.isNewBar and barData_1.isNewBar
+    // 반전 신호 탐지
     [reverseUpSignal_val, reverseDownSignal_val,
      lastDownHigh_val, lastUpLow_val,
      lastDownLow_val, lastUpHigh_val,
@@ -225,9 +301,11 @@ if barData_0.isNewBar and barData_1.isNewBar
                                                  )
     signalData_1.ru := reverseUpSignal_val
     signalData_1.rd := reverseDownSignal_val
-    // 更新全局变量
+
+    // 전역 변수 업데이트
     barData_1.lastReverseType := lastReverseType_val
-    // 计算反转K线位置
+
+    // 반전 K선 위치 계산
     if not(barData_1.ldh == lastDownHigh_val)
         barData_1.ldh := lastDownHigh_val
         barData_1.ldl := lastDownLow_val
@@ -243,8 +321,10 @@ if barData_0.isNewBar and barData_1.isNewBar
         hLineData_1.hLinePrice_ldh := high[1 - barData_1.highest]
         hLineData_1.hLinePrice_lul := low[1 - barData_1.lowest]
 
- // 【4.2 HTF_2】
+
+// 【4.2 상위 타임프레임 2 (HTF_2)】
 if barData_0.isNewBar and barData_2.isNewBar
+    // 반전 신호 탐지
     [reverseUpSignal_val, reverseDownSignal_val,
      lastDownHigh_val, lastUpLow_val,
      lastDownLow_val, lastUpHigh_val,
@@ -259,9 +339,11 @@ if barData_0.isNewBar and barData_2.isNewBar
 
     signalData_2.ru := reverseUpSignal_val
     signalData_2.rd := reverseDownSignal_val
-    // 更新全局变量
+
+    // 전역 변수 업데이트
     barData_2.lastReverseType := lastReverseType_val
-    // 计算反转K线位置
+
+    // 반전 K선 위치 계산
     if not(barData_2.ldh == lastDownHigh_val)
         barData_2.ldh := lastDownHigh_val
         barData_2.ldl := lastDownLow_val
@@ -279,11 +361,14 @@ if barData_0.isNewBar and barData_2.isNewBar
 
 
 ////////////////////////////////////////////////////////////////////////////////////////
-// 【PART5-绘图】
-// 【5.0 HTF_0】
-// 绘制当前周期的K线反转信号
+// 【PART5-차트 그리기】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 【5.0 현재 타임프레임 (HTF_0)】
+// 현재 주기 K선 반전 신호 표시
 if showReverse_0
     if signalData_0.ru
+        // 상승 반전: 저가 아래에 녹색 라벨 표시
         label.new(barData_0.ldlIndex,
                      y=low,
                      yloc=yloc.belowbar,
@@ -293,6 +378,7 @@ if showReverse_0
                      size=size.tiny
                      )
     else if signalData_0.rd
+        // 하락 반전: 고가 위에 빨간색 라벨 표시
         label.new(barData_0.luhIndex,
                      y=high,
                      yloc=yloc.abovebar,
@@ -302,10 +388,12 @@ if showReverse_0
                      size=size.tiny
                      )
 
-// 绘制当前周期反转判断横线
+// 현재 주기 반전 판단 수평선 표시
 if showReverse_line_0
     line.delete(hLineData_0.hLine_ldh)
     line.delete(hLineData_0.hLine_lul)
+
+    // 하락 추세일 때: 돌파해야 할 고가 수평선 (파란색)
     hLineData_0.hLine_ldh := line.new(barData_0.lastReverseType == 'down' ? hLineData_0.hLineIndex_ldh : na,
                                          hLineData_0.hLinePrice_ldh,
                                          barData_0.lastReverseType == 'down' ?  bar_index + 5 : na,
@@ -314,6 +402,7 @@ if showReverse_line_0
                                          style=line.style_dotted,
                                          width=2
                                          )
+    // 상승 추세일 때: 돌파해야 할 저가 수평선 (파란색)
     hLineData_0.hLine_lul := line.new(barData_0.lastReverseType == 'up' ? hLineData_0.hLineIndex_lul : na,
                                          hLineData_0.hLinePrice_lul,
                                          barData_0.lastReverseType == 'up' ?  bar_index + 5 : na,
@@ -324,10 +413,11 @@ if showReverse_line_0
                                          )
 
 
-// 【5.1 HTF_1】
-// 绘制HTF_1的K线反转信号
+// 【5.1 상위 타임프레임 1 (HTF_1)】
+// HTF_1 K선 반전 신호 표시 (사각형 심볼)
 if barData_1.isNewBar and showReverse_1 and periodMultiple_HTF1 > 1
     if signalData_1.ru
+        // 상승 반전: 녹색 사각형
         label.new(barData_1.ldlIndex,
                      y=low,
                      yloc=yloc.belowbar,
@@ -337,6 +427,7 @@ if barData_1.isNewBar and showReverse_1 and periodMultiple_HTF1 > 1
                      size=size.small
                      )
     else if signalData_1.rd
+        // 하락 반전: 빨간색 사각형
         label.new(barData_1.luhIndex,
                      y=high,
                      yloc=yloc.abovebar,
@@ -346,9 +437,11 @@ if barData_1.isNewBar and showReverse_1 and periodMultiple_HTF1 > 1
                      size=size.small
                      )
 
-// 绘制HTF_1入场信号
+// HTF_1 진입 신호 표시 (삼각형 심볼)
+// 실제 거래 진입점을 나타냄 (반전 신호보다 1봉 늦음)
 if showEntrySignal_1 and periodMultiple_HTF1 > 1
     if signalData_1.ru
+        // 상승 진입: 녹색 삼각형 (위쪽)
         label.new(x = bar_index,
              y = low,
              yloc = yloc.belowbar,
@@ -359,6 +452,7 @@ if showEntrySignal_1 and periodMultiple_HTF1 > 1
              size = size.tiny
              )
     if signalData_1.rd
+        // 하락 진입: 빨간색 삼각형 (아래쪽)
         label.new(x = bar_index,
              y = high,
              yloc = yloc.abovebar,
@@ -369,10 +463,12 @@ if showEntrySignal_1 and periodMultiple_HTF1 > 1
              size = size.tiny
              )
 
-// 绘制HTF_1反转判断横线
+// HTF_1 반전 판단 수평선 표시
 if showReverse_line_1
     line.delete(hLineData_1.hLine_ldh)
     line.delete(hLineData_1.hLine_lul)
+
+    // 하락 추세: 돌파해야 할 고가선 (빨간색)
     hLineData_1.hLine_ldh := line.new(barData_1.lastReverseType == 'down' ? hLineData_1.hLineIndex_ldh : na,
                                          hLineData_1.hLinePrice_ldh,
                                          barData_1.lastReverseType == 'down' ?  bar_index + 5 : na,
@@ -381,6 +477,7 @@ if showReverse_line_1
                                          style=line.style_dotted,
                                          width=2
                                          )
+    // 상승 추세: 돌파해야 할 저가선 (빨간색)
     hLineData_1.hLine_lul := line.new(barData_1.lastReverseType == 'up' ? hLineData_1.hLineIndex_lul : na,
                                          hLineData_1.hLinePrice_lul,
                                          barData_1.lastReverseType == 'up' ?  bar_index + 5 : na,
@@ -391,10 +488,11 @@ if showReverse_line_1
                                          )
 
 
-// 【5.2 HTF_2】
-// 绘制HTF_2的K线反转信号
+// 【5.2 상위 타임프레임 2 (HTF_2)】
+// HTF_2 K선 반전 신호 표시 (X 심볼)
 if barData_2.isNewBar and showReverse_2 and periodMultiple_HTF2 > 1
     if signalData_2.ru
+        // 상승 반전: 녹색 X
         label.new(barData_2.ldlIndex,
                      y=low,
                      yloc=yloc.belowbar,
@@ -404,6 +502,7 @@ if barData_2.isNewBar and showReverse_2 and periodMultiple_HTF2 > 1
                      size=size.tiny
                      )
     else if signalData_2.rd
+        // 하락 반전: 빨간색 X
         label.new(barData_2.luhIndex,
                      y=high,
                      yloc=yloc.abovebar,
@@ -413,9 +512,10 @@ if barData_2.isNewBar and showReverse_2 and periodMultiple_HTF2 > 1
                      size=size.tiny
                      )
 
-// 绘制HTF_2入场信号
+// HTF_2 진입 신호 표시 (라벨 심볼)
 if showEntrySignal_2 and periodMultiple_HTF2 > 1
     if signalData_2.ru
+        // 상승 진입: 녹색 라벨
         label.new(x = bar_index,
              y = low,
              yloc = yloc.belowbar,
@@ -426,6 +526,7 @@ if showEntrySignal_2 and periodMultiple_HTF2 > 1
              size = size.tiny
              )
     if signalData_2.rd
+        // 하락 진입: 빨간색 라벨
         label.new(x = bar_index,
              y = high,
              yloc = yloc.abovebar,
@@ -436,10 +537,12 @@ if showEntrySignal_2 and periodMultiple_HTF2 > 1
              size = size.tiny
              )
 
-// 绘制HTF_2反转判断横线
+// HTF_2 반전 판단 수평선 표시
 if showReverse_line_2
     line.delete(hLineData_2.hLine_ldh)
     line.delete(hLineData_2.hLine_lul)
+
+    // 하락 추세: 돌파해야 할 고가선 (주황색)
     hLineData_2.hLine_ldh := line.new(barData_2.lastReverseType == 'down' ? hLineData_2.hLineIndex_ldh : na,
                                          hLineData_2.hLinePrice_ldh,
                                          barData_2.lastReverseType == 'down' ?  bar_index + 5 : na,
@@ -448,6 +551,7 @@ if showReverse_line_2
                                          style=line.style_dotted,
                                          width=2
                                          )
+    // 상승 추세: 돌파해야 할 저가선 (주황색)
     hLineData_2.hLine_lul := line.new(barData_2.lastReverseType == 'up' ? hLineData_2.hLineIndex_lul : na,
                                          hLineData_2.hLinePrice_lul,
                                          barData_2.lastReverseType == 'up' ?  bar_index + 5 : na,
