@@ -78,6 +78,12 @@ showReverse_2 = input.bool(true, 'HTF_2의 반전 심볼', group = 'HTF_2')
 showReverse_line_2 = input.bool(true, 'HTF_2의 보조 판단 수평선', group = 'HTF_2')
 showEntrySignal_2 = input.bool(false, 'HTF_2의 진입 신호', group = 'HTF_2')
 
+// 알림 설정
+enableAlert_0 = input.bool(false, '현재 주기 반전 알림', group = '알림 설정')
+enableAlert_1 = input.bool(true, 'HTF_1 반전 알림', group = '알림 설정')
+enableAlert_2 = input.bool(false, 'HTF_2 반전 알림', group = '알림 설정')
+alertFrequency = input.string("봉당 1회", "알림 빈도", ["봉당 1회", "조건당 1회", "모두"], group = '알림 설정')
+
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // 【PART2-변수 선언】
@@ -560,3 +566,100 @@ if showReverse_line_2
                                          style=line.style_dotted,
                                          width=2
                                          )
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART6-알림 기능】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 알림 빈도 설정
+alertFreq = alertFrequency == "봉당 1회" ? alert.freq_once_per_bar :
+            alertFrequency == "조건당 1회" ? alert.freq_once_per_bar_close :
+            alert.freq_all
+
+// 【6.0 현재 타임프레임 알림】
+if enableAlert_0 and barData_0.isNewBar
+    if signalData_0.ru
+        alert(str.format("🟢 {0} | 현재({1}) | 상승 반전 발생! | 가격: {2}",
+              syminfo.ticker, timeframe.period, str.tostring(close, format.mintick)), alertFreq)
+    if signalData_0.rd
+        alert(str.format("🔴 {0} | 현재({1}) | 하락 반전 발생! | 가격: {2}",
+              syminfo.ticker, timeframe.period, str.tostring(close, format.mintick)), alertFreq)
+
+// 【6.1 HTF_1 알림】
+if enableAlert_1 and barData_1.isNewBar and periodMultiple_HTF1 > 1
+    if signalData_1.ru
+        alert(str.format("🟢 {0} | HTF_1({1}) | 상승 반전 발생! | 가격: {2}",
+              syminfo.ticker, higherTimeframe_1, str.tostring(close, format.mintick)), alertFreq)
+    if signalData_1.rd
+        alert(str.format("🔴 {0} | HTF_1({1}) | 하락 반전 발생! | 가격: {2}",
+              syminfo.ticker, higherTimeframe_1, str.tostring(close, format.mintick)), alertFreq)
+
+// 【6.2 HTF_2 알림】
+if enableAlert_2 and barData_2.isNewBar and periodMultiple_HTF2 > 1
+    if signalData_2.ru
+        alert(str.format("🟢 {0} | HTF_2({1}) | 상승 반전 발생! | 가격: {2}",
+              syminfo.ticker, higherTimeframe_2, str.tostring(close, format.mintick)), alertFreq)
+    if signalData_2.rd
+        alert(str.format("🔴 {0} | HTF_2({1}) | 하락 반전 발생! | 가격: {2}",
+              syminfo.ticker, higherTimeframe_2, str.tostring(close, format.mintick)), alertFreq)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART7-alertcondition (TradingView 알림 설정용)】
+////////////////////////////////////////////////////////////////////////////////////////
+// TradingView에서 알림 생성 시 선택 가능한 조건들
+// 차트에서 우클릭 → 알림 추가 → 조건 선택에서 사용
+
+// 현재 타임프레임
+alertcondition(signalData_0.ru and barData_0.isNewBar,
+    title="현재 TF 상승 반전",
+    message="🟢 {{ticker}} | 현재({{interval}}) | 상승 반전 | 가격: {{close}}")
+
+alertcondition(signalData_0.rd and barData_0.isNewBar,
+    title="현재 TF 하락 반전",
+    message="🔴 {{ticker}} | 현재({{interval}}) | 하락 반전 | 가격: {{close}}")
+
+// HTF_1
+alertcondition(signalData_1.ru and barData_1.isNewBar and periodMultiple_HTF1 > 1,
+    title="HTF_1 상승 반전",
+    message="🟢 {{ticker}} | HTF_1 | 상승 반전 | 가격: {{close}}")
+
+alertcondition(signalData_1.rd and barData_1.isNewBar and periodMultiple_HTF1 > 1,
+    title="HTF_1 하락 반전",
+    message="🔴 {{ticker}} | HTF_1 | 하락 반전 | 가격: {{close}}")
+
+// HTF_2
+alertcondition(signalData_2.ru and barData_2.isNewBar and periodMultiple_HTF2 > 1,
+    title="HTF_2 상승 반전",
+    message="🟢 {{ticker}} | HTF_2 | 상승 반전 | 가격: {{close}}")
+
+alertcondition(signalData_2.rd and barData_2.isNewBar and periodMultiple_HTF2 > 1,
+    title="HTF_2 하락 반전",
+    message="🔴 {{ticker}} | HTF_2 | 하락 반전 | 가격: {{close}}")
+
+// 모든 상승 반전 (통합)
+alertcondition(
+    (signalData_0.ru and barData_0.isNewBar) or
+    (signalData_1.ru and barData_1.isNewBar and periodMultiple_HTF1 > 1) or
+    (signalData_2.ru and barData_2.isNewBar and periodMultiple_HTF2 > 1),
+    title="모든 상승 반전",
+    message="🟢 {{ticker}} | 상승 반전 발생! | 가격: {{close}}")
+
+// 모든 하락 반전 (통합)
+alertcondition(
+    (signalData_0.rd and barData_0.isNewBar) or
+    (signalData_1.rd and barData_1.isNewBar and periodMultiple_HTF1 > 1) or
+    (signalData_2.rd and barData_2.isNewBar and periodMultiple_HTF2 > 1),
+    title="모든 하락 반전",
+    message="🔴 {{ticker}} | 하락 반전 발생! | 가격: {{close}}")
+
+// 모든 반전 (통합)
+alertcondition(
+    (signalData_0.ru and barData_0.isNewBar) or (signalData_0.rd and barData_0.isNewBar) or
+    (signalData_1.ru and barData_1.isNewBar and periodMultiple_HTF1 > 1) or
+    (signalData_1.rd and barData_1.isNewBar and periodMultiple_HTF1 > 1) or
+    (signalData_2.ru and barData_2.isNewBar and periodMultiple_HTF2 > 1) or
+    (signalData_2.rd and barData_2.isNewBar and periodMultiple_HTF2 > 1),
+    title="모든 반전 (통합)",
+    message="⚡ {{ticker}} | 반전 발생! | 가격: {{close}}")
