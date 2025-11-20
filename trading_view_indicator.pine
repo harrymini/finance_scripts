@@ -59,7 +59,7 @@ pullbackType = input.string("1", "K선 업데이트 방식", ["1", "2"], group =
 
 // HTF 설정 모드
 htfMode = input.string("자동", "HTF 설정 모드", ["자동", "수동"],
-    tooltip="자동: 현재 TF 기준으로 HTF 자동 계산\n수동: 직접 HTF 타임프레임 입력",
+    tooltip="자동: 현재 TF 기준으로 HTF 자동 계산 / 수동: 직접 HTF 타임프레임 입력",
     group = 'HTF 설정')
 
 // 수동 모드용 입력
