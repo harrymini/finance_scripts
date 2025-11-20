@@ -616,7 +616,7 @@ function analyzeGlobalLiquidity() {
     }
     
     // Global_Liquidity 시트 업데이트
-    const timestamp = new Date().toLocaleString('ko-KR', {timeZone: 'America/New_York'});
+    const timestamp = new Date().toLocaleString('ko-KR', {timeZone: 'Asia/Seoul'});
     
     globalSheet.getRange(2, 1, 1, 19).setValues([[
       timestamp,
@@ -1239,7 +1239,7 @@ function updateLiveMonitor() {
     ]);
     
     // 메모 추가
-    const now = new Date().toLocaleString('ko-KR', {timeZone: 'America/New_York'});
+    const now = new Date().toLocaleString('ko-KR', {timeZone: 'Asia/Seoul'});
     liveSheet.getRange('A2').setNote(`마지막 업데이트: ${now}`);
     
     Logger.log('✅ Live_Monitor 업데이트 완료 및 History 기록');
@@ -1548,8 +1548,8 @@ function logAlertHistory(alerts, analysis) {
 function sendGlobalAlert(alerts, analysis) {
   try {
     const userEmail = Session.getActiveUser().getEmail();
-    const timestamp = new Date().toLocaleString('ko-KR');
-    
+    const timestamp = new Date().toLocaleString('ko-KR', {timeZone: 'Asia/Seoul'});
+
     let emailBody = `
       <div style="font-family: Arial; background-color: #f5f5f5; padding: 20px;">
         <h2 style="color: #1f77b4;">🌐 글로벌 유동성 알림</h2>
@@ -2088,7 +2088,7 @@ function createGlobalDashboard() {
       </div>
       
       <p style="text-align: center; margin-top: 30px;">
-        <em>생성 시간: ${new Date().toLocaleString('ko-KR')}</em>
+        <em>생성 시간: ${new Date().toLocaleString('ko-KR', {timeZone: 'Asia/Seoul'})}</em>
       </p>
     `).setWidth(600).setHeight(800);
     
