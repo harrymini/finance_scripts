@@ -709,6 +709,93 @@ function setupGlobalSheet(sheet) {
 }
 
 /** ===============================================
+ * Global_History 마지막 두 행 비교 분석
+ * =============================================== */
+
+function getHistoryComparison() {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const globalHistorySheet = ss.getSheetByName(CONFIG.GLOBAL_HISTORY_SHEET);
+
+    if (!globalHistorySheet) {
+      return null;
+    }
+
+    const lastRow = globalHistorySheet.getLastRow();
+    if (lastRow < 3) {
+      // 최소 헤더 + 2개 행이 필요
+      return null;
+    }
+
+    // 마지막 두 행 가져오기 (20개 컬럼)
+    const data = globalHistorySheet.getRange(lastRow - 1, 1, 2, 20).getValues();
+    const prev = data[0];
+    const curr = data[1];
+
+    // 컬럼 인덱스 (0-based)
+    // 0: 타임스탬프, 1: WALCL, 2: WALCL WoW, 3: TGA, 4: TGA WoW, 5: ON RRP
+    // 6: DXY, 7: DXY WoW, 8: 중국 M2, 9: 중국 신용, 10: 중국 FX
+    // 11: USD/JPY, 12: JGB 10Y, 13: US-JP 스프레드
+    // 14: USD/KRW, 15: USD/BRL, 16: EM 강세지수
+    // 17: 유동성 점수, 18: 신호, 19: 투자 권장
+
+    return {
+      prevTimestamp: prev[0],
+      currTimestamp: curr[0],
+      dxy: {
+        prev: prev[6],
+        curr: curr[6],
+        change: curr[6] - prev[6]
+      },
+      walcl: {
+        prev: prev[1],
+        curr: curr[1],
+        wow: curr[2]
+      },
+      tga: {
+        prev: prev[3],
+        curr: curr[3],
+        wow: curr[4]
+      },
+      onrrp: {
+        prev: prev[5],
+        curr: curr[5],
+        change: curr[5] - prev[5]
+      },
+      chinaM2: {
+        prev: prev[8],
+        curr: curr[8],
+        change: curr[8] - prev[8]
+      },
+      usdjpy: {
+        prev: prev[11],
+        curr: curr[11],
+        change: curr[11] - prev[11]
+      },
+      usdkrw: {
+        prev: prev[14],
+        curr: curr[14],
+        change: curr[14] - prev[14]
+      },
+      emIndex: {
+        prev: prev[16],
+        curr: curr[16],
+        change: curr[16] - prev[16]
+      },
+      score: {
+        prev: prev[17],
+        curr: curr[17],
+        change: curr[17] - prev[17]
+      }
+    };
+
+  } catch (e) {
+    Logger.log(`❌ History 비교 분석 오류: ${e.message}`);
+    return null;
+  }
+}
+
+/** ===============================================
  * 글로벌 유동성 히스토리 기록
  * =============================================== */
 
@@ -1416,8 +1503,12 @@ function disableAlerts() {
 function checkGlobalAlerts() {
   try {
     const analysis = analyzeGlobalLiquidity();
+
+    // Global_History에 현재 분석 결과 기록
+    logGlobalHistory(analysis);
+
     const alerts = [];
-    
+
     // 극단적 신호 (업데이트된 기준)
     if (analysis.score >= 80) {
       alerts.push({
@@ -1473,7 +1564,9 @@ function checkGlobalAlerts() {
     }
     
     if (alerts.length > 0) {
-      sendGlobalAlert(alerts, analysis);
+      // History에서 이전 데이터와 비교
+      const comparison = getHistoryComparison();
+      sendGlobalAlert(alerts, analysis, comparison);
       logAlertHistory(alerts, analysis);
     }
     
@@ -1545,38 +1638,73 @@ function logAlertHistory(alerts, analysis) {
   }
 }
 
-function sendGlobalAlert(alerts, analysis) {
+function sendGlobalAlert(alerts, analysis, comparison) {
   try {
     const userEmail = Session.getActiveUser().getEmail();
     const timestamp = new Date().toLocaleString('ko-KR', {timeZone: 'Asia/Seoul'});
 
+    // 변화량 포맷팅 헬퍼
+    const formatChange = (value) => {
+      if (value === null || value === undefined || isNaN(value)) return '';
+      const sign = value >= 0 ? '+' : '';
+      return ` (${sign}${value.toFixed(2)})`;
+    };
+
+    // 비교 데이터가 있는 경우 변화량 계산
+    const dxyChange = comparison ? formatChange(comparison.dxy.change) : formatChange(analysis.details.dxy.change);
+    const usdjpyChange = comparison ? formatChange(comparison.usdjpy.change) : '';
+    const chinaM2Change = comparison ? formatChange(comparison.chinaM2.change) : '';
+    const scoreChange = comparison ? formatChange(comparison.score.change) : '';
+
     let emailBody = `
-      <div style="font-family: Arial; background-color: #f5f5f5; padding: 20px;">
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+      </head>
+      <body>
+      <div style="font-family: 'Apple SD Gothic Neo', 'Malgun Gothic', Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
         <h2 style="color: #1f77b4;">🌐 글로벌 유동성 알림</h2>
         <p><strong>시간:</strong> ${timestamp}</p>
-        <p><strong>유동성 점수:</strong> ${analysis.score} / 100</p>
+        <p><strong>유동성 점수:</strong> ${analysis.score} / 100${scoreChange}</p>
         <p><strong>신호:</strong> ${analysis.signal}</p>
-        
+
         <h3>📊 주요 지표</h3>
         <table style="border-collapse: collapse; width: 100%; background: white;">
           <tr>
             <td style="border: 1px solid #ddd; padding: 8px;"><strong>DXY:</strong></td>
-            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.dxy.level.toFixed(2)} (${analysis.details.dxy.change > 0 ? '+' : ''}${analysis.details.dxy.change.toFixed(2)})</td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.dxy.level.toFixed(2)}${dxyChange}</td>
           </tr>
           <tr>
             <td style="border: 1px solid #ddd; padding: 8px;"><strong>WALCL WoW:</strong></td>
             <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.us.walcl_wow.toFixed(0)}M$</td>
           </tr>
           <tr>
+            <td style="border: 1px solid #ddd; padding: 8px;"><strong>TGA WoW:</strong></td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.us.tga.week_change.toFixed(0)}M$</td>
+          </tr>
+          <tr>
+            <td style="border: 1px solid #ddd; padding: 8px;"><strong>ON RRP:</strong></td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.us.onrrp.toFixed(0)}M$</td>
+          </tr>
+          <tr>
             <td style="border: 1px solid #ddd; padding: 8px;"><strong>중국 M2:</strong></td>
-            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.china.m2_growth.toFixed(1)}%</td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.china.m2_growth.toFixed(1)}%${chinaM2Change}</td>
           </tr>
           <tr>
             <td style="border: 1px solid #ddd; padding: 8px;"><strong>USD/JPY:</strong></td>
-            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.japan.usdjpy.toFixed(2)}</td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.japan.usdjpy.toFixed(2)}${usdjpyChange}</td>
+          </tr>
+          <tr>
+            <td style="border: 1px solid #ddd; padding: 8px;"><strong>USD/KRW:</strong></td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.em.usdkrw.toFixed(2)}${comparison ? formatChange(comparison.usdkrw.change) : ''}</td>
+          </tr>
+          <tr>
+            <td style="border: 1px solid #ddd; padding: 8px;"><strong>EM 강세지수:</strong></td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.em.strength_index.toFixed(2)}${comparison ? formatChange(comparison.emIndex.change) : ''}</td>
           </tr>
         </table>
-        
+
         <h3>🚨 알림 내역</h3>
         <table style="border-collapse: collapse; width: 100%; margin: 20px 0;">
           <tr style="background-color: #d3d3d3;">
@@ -1585,7 +1713,7 @@ function sendGlobalAlert(alerts, analysis) {
             <th style="border: 1px solid #999; padding: 10px;">권장 조치</th>
           </tr>
     `;
-    
+
     alerts.forEach(a => {
       emailBody += `
         <tr style="background-color: white;">
@@ -1595,22 +1723,24 @@ function sendGlobalAlert(alerts, analysis) {
         </tr>
       `;
     });
-    
+
     emailBody += `
         </table>
         <hr style="border: 1px solid #ddd;">
         <p><a href="${SpreadsheetApp.getActive().getUrl()}" style="background-color: #1f77b4; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">📊 스프레드시트 보기</a></p>
       </div>
+      </body>
+      </html>
     `;
-    
+
     GmailApp.sendEmail(userEmail, '🌐 글로벌 유동성 알림', '', {
       htmlBody: emailBody
     });
-    
-    Logger.log(`✉️ 글로벌 알림 발송: ${userEmail}`);
-    
+
+    Logger.log('✉️ 글로벌 알림 발송: ' + userEmail);
+
   } catch (e) {
-    Logger.log(`❌ 이메일 발송 오류: ${e.message}`);
+    Logger.log('❌ 이메일 발송 오류: ' + e.message);
   }
 }
 
