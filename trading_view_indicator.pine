@@ -55,22 +55,56 @@ indicator("카드 K선 반전-V5", overlay=true, dynamic_requests=true, max_bars
 // K선 업데이트 방식 선택
 // 모드 1: 그림자(꼬리) 돌파로 다음 상승/하락 K선 업데이트 및 전달
 // 모드 2: 실체(몸통) 돌파로 그림자를 기준으로 업데이트
-pullbackType = input.string("1", "K선 업데이트 방식", ["1", "2"], group = '당前周期')
+pullbackType = input.string("1", "K선 업데이트 방식", ["1", "2"], group = '현재 주기')
 
-// 타임프레임 설정
-nowTimeFrame = str.tostring(timeframe.in_seconds() / 60)  // 현재 타임프레임(분 단위)
-higherTimeframe_1 = input.timeframe("15", "HTF_1", group = 'HTF_1')  // 상위 타임프레임 1
-higherTimeframe_2 = input.timeframe("5", "HTF_2", group = 'HTF_2')   // 상위 타임프레임 2
+// HTF 설정 모드
+htfMode = input.string("자동", "HTF 설정 모드", ["자동", "수동"],
+    tooltip="자동: 현재 TF 기준으로 HTF 자동 계산\n수동: 직접 HTF 타임프레임 입력",
+    group = 'HTF 설정')
+
+// 수동 모드용 입력
+manualHTF_1 = input.timeframe("60", "HTF_1 (수동)", group = 'HTF 설정')
+manualHTF_2 = input.timeframe("30", "HTF_2 (수동)", group = 'HTF 설정')
+
+// 자동 HTF 배수 설정
+autoMultiplier_1 = input.int(4, "HTF_1 배수 (자동)", minval=2, maxval=10,
+    tooltip="현재 TF × 이 값 = HTF_1", group = 'HTF 설정')
+autoMultiplier_2 = input.int(2, "HTF_2 배수 (자동)", minval=2, maxval=10,
+    tooltip="현재 TF × 이 값 = HTF_2", group = 'HTF 설정')
+
+// 현재 타임프레임 (분 단위)
+nowTimeFrame = str.tostring(timeframe.in_seconds() / 60)
+currentTfSeconds = timeframe.in_seconds()
+
+// 자동 HTF 계산 함수
+// 초 단위를 타임프레임 문자열로 변환
+getTimeframeString(int seconds) =>
+    minutes = seconds / 60
+    if minutes >= 10080        // 1주 이상
+        "W"
+    else if minutes >= 1440    // 1일 이상
+        "D"
+    else if minutes >= 60      // 1시간 이상
+        str.tostring(minutes)
+    else
+        str.tostring(minutes)
+
+// HTF 타임프레임 결정
+htf1Seconds = htfMode == "자동" ? currentTfSeconds * autoMultiplier_1 : timeframe.in_seconds(manualHTF_1)
+htf2Seconds = htfMode == "자동" ? currentTfSeconds * autoMultiplier_2 : timeframe.in_seconds(manualHTF_2)
+
+higherTimeframe_1 = htfMode == "자동" ? getTimeframeString(htf1Seconds) : manualHTF_1
+higherTimeframe_2 = htfMode == "자동" ? getTimeframeString(htf2Seconds) : manualHTF_2
 
 // HTF와 현재 주기의 배수 관계 계산 (1보다 작으면 1로 설정)
-var int periodMultiple_HTF1 = timeframe.in_seconds(higherTimeframe_1) / timeframe.in_seconds()
-var int periodMultiple_HTF2 = timeframe.in_seconds(higherTimeframe_2) / timeframe.in_seconds()
+var int periodMultiple_HTF1 = htf1Seconds / currentTfSeconds
+var int periodMultiple_HTF2 = htf2Seconds / currentTfSeconds
 periodMultiple_HTF1 := periodMultiple_HTF1 > 1 ? periodMultiple_HTF1 : 1
 periodMultiple_HTF2 := periodMultiple_HTF2 > 1 ? periodMultiple_HTF2 : 1
 
 // 신호 표시 옵션
-showReverse_0 = input.bool(false, '현재 주기의 반전 심볼', group = '당前周期')
-showReverse_line_0 = input.bool(true, '현재 주기의 보조 판단 수평선', group = '당前周期')
+showReverse_0 = input.bool(false, '현재 주기의 반전 심볼', group = '현재 주기')
+showReverse_line_0 = input.bool(true, '현재 주기의 보조 판단 수평선', group = '현재 주기')
 showReverse_1 = input.bool(true, 'HTF_1의 반전 심볼', group = 'HTF_1')
 showReverse_line_1 = input.bool(true, 'HTF_1의 보조 판단 수평선', group = 'HTF_1')
 showEntrySignal_1 = input.bool(true, 'HTF_1의 진입 신호', group = 'HTF_1')
