@@ -316,6 +316,61 @@ function determineChinaSignal(m2_growth) {
 }
 
 /** ===============================================
+ * 3-B) Google Finance 실시간 환율 조회
+ * =============================================== */
+
+/**
+ * Google Finance를 사용하여 실시간 환율 조회 (~15분 지연)
+ * @param {string} pair - 통화쌍 (예: 'USDKRW', 'USDJPY', 'USDBRL')
+ * @returns {number} 환율 값
+ */
+function getGoogleFinanceFX(pair) {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const tempSheet = ss.getSheetByName('_temp_fx') || ss.insertSheet('_temp_fx');
+
+    // GOOGLEFINANCE 수식으로 실시간 환율 조회
+    const cell = tempSheet.getRange('A1');
+    cell.setFormula(`=GOOGLEFINANCE("CURRENCY:${pair}")`);
+    SpreadsheetApp.flush();
+
+    const value = cell.getValue();
+
+    // 임시 시트 숨기기
+    tempSheet.hideSheet();
+
+    if (typeof value === 'number' && value > 0) {
+      Logger.log(`✅ Google Finance ${pair}: ${value}`);
+      return value;
+    }
+
+    throw new Error('Invalid value from Google Finance');
+
+  } catch (e) {
+    Logger.log(`⚠️ Google Finance ${pair} 실패, FRED fallback: ${e.message}`);
+    return null; // fallback을 위해 null 반환
+  }
+}
+
+/**
+ * Google Finance로 환율 조회, 실패시 FRED fallback
+ * @param {string} pair - 통화쌍 (예: 'USDKRW')
+ * @param {string} fredId - FRED 시리즈 ID
+ * @returns {number} 환율 값
+ */
+function getFXRate(pair, fredId) {
+  // 먼저 Google Finance 시도
+  const gfValue = getGoogleFinanceFX(pair);
+  if (gfValue !== null) {
+    return gfValue;
+  }
+
+  // 실패시 FRED fallback
+  const fredData = getFredData(fredId, false);
+  return fredData.value || 0;
+}
+
+/** ===============================================
  * 4) 일본/엔캐리 모니터링
  * =============================================== */
 
@@ -323,29 +378,31 @@ function getJapanLiquidity() {
   try {
     const cache = CacheService.getScriptCache();
     const cacheKey = 'JAPAN_LIQUIDITY';
-    
+
     const cached = cache.get(cacheKey);
     if (cached) {
       return JSON.parse(cached);
     }
-    
-    const usdjpy = getFredData(CONFIG.GLOBAL_FRED_IDS.USDJPY, false);
+
+    // Google Finance로 실시간 USD/JPY 조회 (FRED fallback)
+    const usdjpy_value = getFXRate('USDJPY', CONFIG.GLOBAL_FRED_IDS.USDJPY);
     const jgb10y = getFredData(CONFIG.GLOBAL_FRED_IDS.JGB_10Y, false);
     const us10y = getFredData('DGS10', false);
-    
+
     const result = {
-      usdjpy: usdjpy.value || 0,
+      usdjpy: usdjpy_value,
       jgb_10y: jgb10y.value || 0,
       us_jpy_spread: (us10y.value || 0) - (jgb10y.value || 0),
-      carry_risk: determineCarryRisk(usdjpy.value, (us10y.value || 0) - (jgb10y.value || 0)),
+      carry_risk: determineCarryRisk(usdjpy_value, (us10y.value || 0) - (jgb10y.value || 0)),
       timestamp: new Date().getTime()
     };
-    
-    cache.put(cacheKey, JSON.stringify(result), 3600);
-    Logger.log(`✅ 일본 데이터: USDJPY ${result.usdjpy}`);
-    
+
+    // 캐시 시간을 5분으로 단축 (실시간 데이터이므로)
+    cache.put(cacheKey, JSON.stringify(result), 300);
+    Logger.log(`✅ 일본 데이터: USDJPY ${result.usdjpy} (Google Finance)`);
+
     return result;
-    
+
   } catch (e) {
     Logger.log(`❌ 일본 데이터 오류: ${e.message}`);
     return { usdjpy: 0, carry_risk: 'NO DATA' };
@@ -427,35 +484,39 @@ function checkDebtCeilingRisk(tga_balance) {
 
 function getEmergingMarketsFX() {
   try {
-    const usdkrw = getFredData(CONFIG.GLOBAL_FRED_IDS.USDKRW, false);
-    const usdbrl = getFredData(CONFIG.GLOBAL_FRED_IDS.USDBRL, false);
-    const usdmxn = getFredData(CONFIG.GLOBAL_FRED_IDS.USDMXN, false);
-    
+    // Google Finance로 실시간 환율 조회 (FRED fallback)
+    const usdkrw_value = getFXRate('USDKRW', CONFIG.GLOBAL_FRED_IDS.USDKRW);
+    const usdbrl_value = getFXRate('USDBRL', CONFIG.GLOBAL_FRED_IDS.USDBRL);
+    const usdmxn_value = getFXRate('USDMXN', CONFIG.GLOBAL_FRED_IDS.USDMXN);
+
+    // 1주일 전 데이터는 FRED에서 (변화율 계산용)
     const usdkrw_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.USDKRW, 7);
     const usdbrl_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.USDBRL, 7);
     const usdmxn_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.USDMXN, 7);
-    
-    const krw_change = ((usdkrw.value - usdkrw_1w.value) / usdkrw_1w.value) * 100;
-    const brl_change = ((usdbrl.value - usdbrl_1w.value) / usdbrl_1w.value) * 100;
-    const mxn_change = ((usdmxn.value - usdmxn_1w.value) / usdmxn_1w.value) * 100;
-    
+
+    const krw_change = usdkrw_1w.value ? ((usdkrw_value - usdkrw_1w.value) / usdkrw_1w.value) * 100 : 0;
+    const brl_change = usdbrl_1w.value ? ((usdbrl_value - usdbrl_1w.value) / usdbrl_1w.value) * 100 : 0;
+    const mxn_change = usdmxn_1w.value ? ((usdmxn_value - usdmxn_1w.value) / usdmxn_1w.value) * 100 : 0;
+
     const strength_index = -(krw_change + brl_change + mxn_change) / 3;
-    
+
+    Logger.log(`✅ EM FX (Google Finance): KRW ${usdkrw_value}, BRL ${usdbrl_value}, MXN ${usdmxn_value}`);
+
     return {
-      usdkrw: usdkrw.value || 0,
-      usdbrl: usdbrl.value || 0,
-      usdmxn: usdmxn.value || 0,
+      usdkrw: usdkrw_value,
+      usdbrl: usdbrl_value,
+      usdmxn: usdmxn_value,
       krw_change: krw_change,
       brl_change: brl_change,
       mxn_change: mxn_change,
       strength_index: strength_index,
-      signal: strength_index > 1 ? '✅ EM 강세' : 
+      signal: strength_index > 1 ? '✅ EM 강세' :
               strength_index < -1 ? '⚠️ EM 약세' : '⚖️ 중립'
     };
-    
+
   } catch (e) {
     Logger.log(`❌ EM FX 오류: ${e.message}`);
-    return { strength_index: 0, signal: 'NO DATA' };
+    return { usdkrw: 0, usdbrl: 0, usdmxn: 0, strength_index: 0, signal: 'NO DATA' };
   }
 }
 
