@@ -1730,6 +1730,16 @@ function logAlertHistory(alerts, analysis) {
   }
 }
 
+/**
+ * 이모지를 HTML numeric entity로 변환
+ * Gmail에서 이모지가 깨지는 문제 해결
+ */
+function encodeEmojis(str) {
+  return str.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/gu,
+    (char) => `&#${char.codePointAt(0)};`
+  );
+}
+
 function sendGlobalAlert(alerts, analysis, comparison) {
   try {
     const userEmail = Session.getActiveUser().getEmail();
@@ -1825,8 +1835,12 @@ function sendGlobalAlert(alerts, analysis, comparison) {
       </html>
     `;
 
-    GmailApp.sendEmail(userEmail, '🌐 글로벌 유동성 알림', '', {
-      htmlBody: emailBody
+    // 이모지를 HTML entity로 변환하여 깨짐 방지
+    const encodedBody = encodeEmojis(emailBody);
+    const encodedSubject = encodeEmojis('🌐 글로벌 유동성 알림');
+
+    GmailApp.sendEmail(userEmail, encodedSubject, '', {
+      htmlBody: encodedBody
     });
 
     Logger.log('✉️ 글로벌 알림 발송: ' + userEmail);
