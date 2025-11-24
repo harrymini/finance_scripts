@@ -1636,6 +1636,37 @@ function checkGlobalAlerts() {
   }
 }
 
+/**
+ * 알림 테스트 - 조건 없이 바로 테스트 알림 발송
+ * 메뉴에서 실행: 📊 Global Liquidity → 🧪 알림 테스트
+ */
+function testGlobalAlert() {
+  try {
+    const analysis = analyzeGlobalLiquidity();
+
+    // Global_History에 현재 분석 결과 기록
+    logGlobalHistory(analysis);
+
+    // 테스트용 알림 생성
+    const alerts = [{
+      level: '🧪 TEST ALERT',
+      message: '알림 테스트 - 이메일 발송 확인',
+      action: '테스트 완료 후 이 알림을 무시하세요'
+    }];
+
+    // History에서 이전 데이터와 비교
+    const comparison = getHistoryComparison();
+    sendGlobalAlert(alerts, analysis, comparison);
+
+    SpreadsheetApp.getUi().alert('✅ 테스트 알림이 발송되었습니다.\n이메일을 확인해주세요.');
+    Logger.log('✅ 테스트 알림 발송 완료');
+
+  } catch (e) {
+    Logger.log(`❌ 테스트 알림 오류: ${e.message}`);
+    SpreadsheetApp.getUi().alert(`❌ 테스트 알림 실패: ${e.message}`);
+  }
+}
+
 /** ===============================================
  * Alert History 기록
  * =============================================== */
@@ -2612,6 +2643,7 @@ function onOpen() {
     .addSeparator()
     .addItem('📊 종합 대시보드', 'createGlobalDashboard')
     .addItem('🔔 알림 설정/해제', 'setupGlobalAlerts')
+    .addItem('🧪 알림 테스트', 'testGlobalAlert')
     .addItem('⏰ 일일 자동갱신', 'createDailyTrigger')
     .addSeparator()
     .addItem('📋 캐시 초기화', 'clearAllCache')
