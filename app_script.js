@@ -172,16 +172,35 @@ function getFredDataRange(fredId, startDate) {
     const dataMap = {};
     const startDateStr = Utilities.formatDate(startDate, 'GMT', 'yyyy-MM-dd');
 
+    // 시작일 이전의 가장 최신 데이터를 저장할 변수
+    let latestBeforeStart = null;
+    let latestBeforeStartDate = null;
+
     // 첫 번째 줄은 헤더이므로 건너뛰기
     for (let i = 1; i < lines.length; i++) {
       const [dateStr, valueStr] = lines[i].split(',');
       const date = dateStr.trim();
       const value = valueStr.trim();
 
-      // 시작 날짜 이후 데이터만 포함
-      if (date >= startDateStr && value !== '.' && value !== '') {
-        dataMap[date] = parseFloat(value);
+      if (value === '.' || value === '') {
+        continue;
       }
+
+      // 시작 날짜 이후 데이터
+      if (date >= startDateStr) {
+        dataMap[date] = parseFloat(value);
+      } else {
+        // 시작 날짜 이전 데이터 중 가장 최신 것 저장
+        if (latestBeforeStartDate === null || date > latestBeforeStartDate) {
+          latestBeforeStartDate = date;
+          latestBeforeStart = parseFloat(value);
+        }
+      }
+    }
+
+    // 시작일 이전의 최신 데이터가 있으면 포함 (월간 데이터 등을 위해)
+    if (latestBeforeStartDate !== null && latestBeforeStart !== null) {
+      dataMap[latestBeforeStartDate] = latestBeforeStart;
     }
 
     Logger.log(`✅ ${fredId}: ${Object.keys(dataMap).length}개 데이터 포인트 로드됨`);
