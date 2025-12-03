@@ -197,10 +197,12 @@ findReverseSignal(higherTimeframe, pullbackType, lastDownHigh, lastUpLow, lastDo
 
     // HTF 데이터 가져오기 (현재 타임프레임이 아닌 경우)
     if higherTimeframe != nowTimeFrame
+        // 실시간 감지: 현재 진행 중인 HTF봉 데이터 사용
         [higherHigh, higherLow, higherClose] = request.security(syminfo.tickerid,
                                                                  higherTimeframe,
-                                                                 [high[1], low[1], close[1]],
-                                                                 lookahead=barmerge.lookahead_on)
+                                                                 [high, low, close],
+                                                                 lookahead=barmerge.lookahead_off,
+                                                                 gaps=barmerge.gaps_off)
         _high  := higherHigh
         _low   := higherLow
         _close := higherClose
@@ -451,24 +453,28 @@ if showReverse_line_0
 
 // 【5.1 상위 타임프레임 1 (HTF_1)】
 // HTF_1 K선 반전 신호 표시 (사각형 심볼)
-if barData_1.isNewBar and showReverse_1 and periodMultiple_HTF1 > 1
+// 실시간: 흐린 색 / 확정: 진한 색
+if showReverse_1 and periodMultiple_HTF1 > 1
+    // HTF봉이 새로 시작했는지 확인 (이전 봉 = 확정)
+    labelTransparency = barData_1.isNewBar ? 0 : 70
+
     if signalData_1.ru
-        // 상승 반전: 녹색 사각형
+        // 상승 반전: 녹색 사각형 (실시간=흐림, 확정=진함)
         label.new(barData_1.ldlIndex,
                      y=low,
                      yloc=yloc.belowbar,
-                     color=color.new(color.green, 0),
-                     text='',
+                     color=color.new(color.green, labelTransparency),
+                     text=barData_1.isNewBar ? '✓' : '',
                      style=label.style_square,
                      size=size.small
                      )
     else if signalData_1.rd
-        // 하락 반전: 빨간색 사각형
+        // 하락 반전: 빨간색 사각형 (실시간=흐림, 확정=진함)
         label.new(barData_1.luhIndex,
                      y=high,
                      yloc=yloc.abovebar,
-                     color=color.new(color.red, 0),
-                     text='',
+                     color=color.new(color.red, labelTransparency),
+                     text=barData_1.isNewBar ? '✓' : '',
                      style=label.style_square,
                      size=size.small
                      )
@@ -526,24 +532,28 @@ if showReverse_line_1
 
 // 【5.2 상위 타임프레임 2 (HTF_2)】
 // HTF_2 K선 반전 신호 표시 (X 심볼)
-if barData_2.isNewBar and showReverse_2 and periodMultiple_HTF2 > 1
+// 실시간: 흐린 색 / 확정: 진한 색
+if showReverse_2 and periodMultiple_HTF2 > 1
+    // HTF봉이 새로 시작했는지 확인 (이전 봉 = 확정)
+    labelTransparency_2 = barData_2.isNewBar ? 0 : 70
+
     if signalData_2.ru
-        // 상승 반전: 녹색 X
+        // 상승 반전: 녹색 X (실시간=흐림, 확정=진함)
         label.new(barData_2.ldlIndex,
                      y=low,
                      yloc=yloc.belowbar,
-                     color=color.new(color.green, 0),
-                     text='',
+                     color=color.new(color.green, labelTransparency_2),
+                     text=barData_2.isNewBar ? '✓' : '',
                      style=label.style_cross,
                      size=size.tiny
                      )
     else if signalData_2.rd
-        // 하락 반전: 빨간색 X
+        // 하락 반전: 빨간색 X (실시간=흐림, 확정=진함)
         label.new(barData_2.luhIndex,
                      y=high,
                      yloc=yloc.abovebar,
-                     color=color.new(color.red, 0),
-                     text='',
+                     color=color.new(color.red, labelTransparency_2),
+                     text=barData_2.isNewBar ? '✓' : '',
                      style=label.style_cross,
                      size=size.tiny
                      )
