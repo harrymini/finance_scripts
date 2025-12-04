@@ -1,0 +1,260 @@
+// ============================================================================
+// Pine Script® 라이선스: MIT License
+// 원본 작성자: Mauricio Pimenta (@exit490) - 2019년 8월
+// v6 업그레이드: 2024년
+// ============================================================================
+//
+// 【전략 설명】
+// SuperTrend ATR with Trailing Stop Loss
+// ATR(Average True Range) 기반 변동성 추세 추적 전략
+//
+// 【핵심 개념】
+// SuperTrend는 변동성(ATR)을 기반으로 한 이동 스탑 및 반전 라인입니다.
+// 가격이 1% 이동할 때마다 스탑로스를 상향 조정합니다.
+// 시장 가격이 스탑로스를 교차하면 포지션을 청산합니다.
+//
+// 【파라미터】
+// - ATR Period: ATR 계산에 사용할 봉 수 (기본: 1)
+// - ATR Multiplier: 변동성에 적용할 배수 (기본: 3.0)
+// - Initial Stop Loss: 초기 스탑로스 비율 (기본: 3%)
+// - Trailing Step: 스탑 상향 조정 기준 (기본: 1%)
+//
+// 【원본 출처】
+// TradingView: PUB;KbFajXHaZXIoaiN4VjSipG6Y0srYWsd1
+// 작성자: @exit490
+//
+// ============================================================================
+
+//@version=6
+indicator("SuperTrend ATR + Trailing Stop Loss", shorttitle="SuperTrend TSL", overlay=true, max_labels_count=500)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 1 - 입력 파라미터】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// SuperTrend 설정
+grp_supertrend = "SuperTrend 설정"
+atrPeriod = input.int(1, "ATR 기간", minval=1, maxval=50, group=grp_supertrend, tooltip="ATR 계산에 사용할 봉 수")
+atrMultiplier = input.float(3.0, "ATR 배수", minval=0.5, maxval=10.0, step=0.1, group=grp_supertrend, tooltip="ATR에 곱할 배수 (클수록 신호 적음)")
+
+// Trailing Stop 설정
+grp_tsl = "Trailing Stop Loss 설정"
+initialStopLossPercent = input.float(3.0, "초기 손절 (%)", minval=0.5, maxval=20.0, step=0.5, group=grp_tsl, tooltip="진입 시 초기 손절 비율")
+trailingStep = input.float(1.0, "트레일링 스텝 (%)", minval=0.5, maxval=5.0, step=0.5, group=grp_tsl, tooltip="이 비율만큼 수익 발생 시 스탑 상향")
+
+// 포지션 설정
+grp_position = "포지션 설정"
+positionType = input.string("BOTH", "포지션 타입", options=["LONG", "SHORT", "BOTH"], group=grp_position)
+
+// 시각화 설정
+grp_visual = "시각화"
+showSuperTrend = input.bool(true, "SuperTrend 라인 표시", group=grp_visual)
+showSignals = input.bool(true, "매수/매도 신호 표시", group=grp_visual)
+showStopLoss = input.bool(true, "손절 라인 표시", group=grp_visual)
+showEntryPrice = input.bool(true, "진입가 표시", group=grp_visual)
+showInfoTable = input.bool(true, "정보 테이블 표시", group=grp_visual)
+
+// 알림 설정
+grp_alert = "알림"
+enableAlerts = input.bool(true, "알림 활성화", group=grp_alert)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 2 - SuperTrend 계산】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// ATR 계산
+atr = atrMultiplier * ta.atr(atrPeriod)
+
+// SuperTrend 밴드 계산
+var float longStop = na
+var float shortStop = na
+
+longStopCalc = hl2 - atr
+shortStopCalc = hl2 + atr
+
+// 이전 값 참조
+longStopPrev = nz(longStop[1], longStopCalc)
+shortStopPrev = nz(shortStop[1], shortStopCalc)
+
+// 스탑 업데이트 (상승 추세에서는 스탑을 올리고, 하락 추세에서는 스탑을 내림)
+longStop := close[1] > longStopPrev ? math.max(longStopCalc, longStopPrev) : longStopCalc
+shortStop := close[1] < shortStopPrev ? math.min(shortStopCalc, shortStopPrev) : shortStopCalc
+
+// 추세 방향 결정
+var int direction = 1
+direction := nz(direction[1], direction)
+direction := direction == -1 and close > shortStopPrev ? 1 : direction == 1 and close < longStopPrev ? -1 : direction
+
+// SuperTrend 값 및 색상
+superTrendValue = direction == 1 ? longStop : shortStop
+superTrendColor = direction == 1 ? color.green : color.red
+
+// 추세 전환 감지
+buySignal = direction == 1 and direction[1] == -1
+sellSignal = direction == -1 and direction[1] == 1
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 3 - Trailing Stop Loss 로직】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 포지션 상태 변수
+var bool inLongPosition = false
+var bool inShortPosition = false
+var float entryPrice = na
+var float currentStopLoss = na
+var float updatedEntryPrice = na
+
+// 롱 포지션 로직
+if positionType == "LONG" or positionType == "BOTH"
+    // 청산 조건
+    crossedStopLoss = inLongPosition and close <= currentStopLoss
+    exitCondition = inLongPosition and (crossedStopLoss or sellSignal)
+
+    if exitCondition
+        inLongPosition := false
+        entryPrice := na
+        updatedEntryPrice := na
+        currentStopLoss := na
+
+    // 진입 조건
+    entryCondition = not inLongPosition and not inShortPosition and buySignal
+
+    if entryCondition
+        inLongPosition := true
+        entryPrice := close
+        updatedEntryPrice := close
+        currentStopLoss := close * (1 - initialStopLossPercent / 100)
+
+    // Trailing Stop 업데이트
+    if inLongPosition
+        profitPercent = (close - updatedEntryPrice) / updatedEntryPrice * 100
+        if profitPercent >= trailingStep
+            newStopLoss = updatedEntryPrice * (1 - initialStopLossPercent / 100 + profitPercent / 100 - trailingStep / 100)
+            currentStopLoss := math.max(currentStopLoss, newStopLoss)
+            updatedEntryPrice := close
+
+// 숏 포지션 로직
+if positionType == "SHORT" or positionType == "BOTH"
+    // 청산 조건
+    crossedStopLoss = inShortPosition and close >= currentStopLoss
+    exitCondition = inShortPosition and (crossedStopLoss or buySignal)
+
+    if exitCondition
+        inShortPosition := false
+        entryPrice := na
+        updatedEntryPrice := na
+        currentStopLoss := na
+
+    // 진입 조건
+    entryCondition = not inLongPosition and not inShortPosition and sellSignal
+
+    if entryCondition
+        inShortPosition := true
+        entryPrice := close
+        updatedEntryPrice := close
+        currentStopLoss := close * (1 + initialStopLossPercent / 100)
+
+    // Trailing Stop 업데이트
+    if inShortPosition
+        profitPercent = (updatedEntryPrice - close) / updatedEntryPrice * 100
+        if profitPercent >= trailingStep
+            newStopLoss = updatedEntryPrice * (1 + initialStopLossPercent / 100 - profitPercent / 100 + trailingStep / 100)
+            currentStopLoss := math.min(currentStopLoss, newStopLoss)
+            updatedEntryPrice := close
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 4 - 시각화】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// SuperTrend 라인
+plot(showSuperTrend ? superTrendValue : na, "SuperTrend", color=superTrendColor, linewidth=2, style=plot.style_linebr)
+
+// 진입가 표시
+plot(showEntryPrice and not na(entryPrice) ? entryPrice : na, "진입가", color=color.blue, style=plot.style_circles, linewidth=2)
+
+// 손절 라인 표시
+stopLossColor = inLongPosition ? color.new(color.red, 50) : inShortPosition ? color.new(color.red, 50) : na
+plot(showStopLoss and not na(currentStopLoss) ? currentStopLoss : na, "손절 라인", color=stopLossColor, style=plot.style_circles, linewidth=1)
+
+// 매수/매도 신호 라벨
+if showSignals and buySignal and (positionType == "LONG" or positionType == "BOTH")
+    label.new(bar_index, longStop, "Buy",
+              style=label.style_label_up,
+              color=color.new(color.green, 0),
+              textcolor=color.white,
+              size=size.normal)
+
+if showSignals and sellSignal and (positionType == "SHORT" or positionType == "BOTH")
+    label.new(bar_index, shortStop, "Sell",
+              style=label.style_label_down,
+              color=color.new(color.red, 0),
+              textcolor=color.white,
+              size=size.normal)
+
+// 배경색
+bgcolor(inLongPosition ? color.new(color.green, 95) : na, title="롱 포지션")
+bgcolor(inShortPosition ? color.new(color.red, 95) : na, title="숏 포지션")
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 5 - 알림】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// Alert conditions
+alertcondition(buySignal, title="Buy 신호", message="🟢 {{ticker}} | SuperTrend Buy 신호! 가격: {{close}}")
+alertcondition(sellSignal, title="Sell 신호", message="🔴 {{ticker}} | SuperTrend Sell 신호! 가격: {{close}}")
+
+// 손절 알림
+longStopHit = inLongPosition[1] and close <= currentStopLoss[1]
+shortStopHit = inShortPosition[1] and close >= currentStopLoss[1]
+alertcondition(longStopHit, title="롱 손절", message="⚠️ {{ticker}} | 롱 손절 도달!")
+alertcondition(shortStopHit, title="숏 손절", message="⚠️ {{ticker}} | 숏 손절 도달!")
+
+// 실시간 알림
+if enableAlerts and buySignal and (positionType == "LONG" or positionType == "BOTH")
+    alert(str.format("🟢 {0} | SuperTrend Buy | 가격: {1}", syminfo.ticker, str.tostring(close, format.mintick)), alert.freq_once_per_bar_close)
+
+if enableAlerts and sellSignal and (positionType == "SHORT" or positionType == "BOTH")
+    alert(str.format("🔴 {0} | SuperTrend Sell | 가격: {1}", syminfo.ticker, str.tostring(close, format.mintick)), alert.freq_once_per_bar_close)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 6 - 정보 테이블】
+////////////////////////////////////////////////////////////////////////////////////////
+
+if showInfoTable
+    var table infoTable = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 80), border_width=1)
+
+    if barstate.islast
+        table.cell(infoTable, 0, 0, "SuperTrend TSL", text_color=color.white, text_size=size.small)
+        table.cell(infoTable, 1, 0, "@exit490", text_color=color.gray, text_size=size.small)
+
+        table.cell(infoTable, 0, 1, "추세", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 1, direction == 1 ? "🟢 상승" : "🔴 하락", text_color=direction == 1 ? color.green : color.red, text_size=size.tiny)
+
+        table.cell(infoTable, 0, 2, "SuperTrend", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 2, str.tostring(superTrendValue, format.mintick), text_color=superTrendColor, text_size=size.tiny)
+
+        table.cell(infoTable, 0, 3, "ATR", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 3, str.tostring(atr, format.mintick), text_color=color.white, text_size=size.tiny)
+
+        positionStatus = inLongPosition ? "🟢 롱" : inShortPosition ? "🔴 숏" : "⚪ 없음"
+        table.cell(infoTable, 0, 4, "포지션", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 4, positionStatus, text_color=color.white, text_size=size.tiny)
+
+        table.cell(infoTable, 0, 5, "진입가", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 5, na(entryPrice) ? "-" : str.tostring(entryPrice, format.mintick), text_color=color.blue, text_size=size.tiny)
+
+        table.cell(infoTable, 0, 6, "손절가", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 6, na(currentStopLoss) ? "-" : str.tostring(currentStopLoss, format.mintick), text_color=color.red, text_size=size.tiny)
+
+        // 현재 수익률
+        currentPnL = inLongPosition ? (close - entryPrice) / entryPrice * 100 :
+                     inShortPosition ? (entryPrice - close) / entryPrice * 100 : 0.0
+        table.cell(infoTable, 0, 7, "수익률", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 7, na(entryPrice) ? "-" : str.tostring(currentPnL, "#.##") + "%",
+                   text_color=currentPnL >= 0 ? color.green : color.red, text_size=size.tiny)
