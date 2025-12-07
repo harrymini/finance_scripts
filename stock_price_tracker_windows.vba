@@ -315,6 +315,304 @@ Private Sub ApplyPriceColor(ws As Worksheet, rowNum As Long, priceChange As Stri
 End Sub
 
 ' =====================================================
+' 특정 날짜 시세 조회 (C열에 날짜 입력)
+' 데이터 시트: A열=종목명, B열=종목코드, C열=조회날짜(yyyy-mm-dd)
+' =====================================================
+Sub UpdateStockPricesByDate()
+    Dim wsData As Worksheet
+    Dim wsResult As Worksheet
+    Dim sheetName As String
+    Dim lastRow As Long
+    Dim i As Long
+    Dim rowNum As Long
+    Dim stockName As String
+    Dim stockCode As String
+    Dim targetDate As String
+    Dim currentPrice As String
+    Dim priceChange As String
+    Dim changePercent As String
+    Dim processedCount As Long
+
+    On Error GoTo ErrorHandler
+
+    On Error Resume Next
+    Set wsData = ThisWorkbook.Worksheets("데이터")
+    On Error GoTo ErrorHandler
+
+    If wsData Is Nothing Then
+        MsgBox "'데이터' 시트를 찾을 수 없습니다.", vbExclamation, "오류"
+        Exit Sub
+    End If
+
+    ' 결과 시트 이름 입력
+    sheetName = InputBox("결과 시트 이름:", "시트 이름", "과거시세")
+    If sheetName = "" Then Exit Sub
+
+    Set wsResult = GetOrCreateSheet(sheetName)
+    SetupHeaderWithDate wsResult
+
+    lastRow = wsData.Cells(wsData.Rows.count, "A").End(xlUp).Row
+
+    If lastRow < 2 Then
+        MsgBox "데이터 시트에 종목 데이터가 없습니다.", vbExclamation, "오류"
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.StatusBar = "과거 시세 조회 중..."
+
+    processedCount = 0
+    rowNum = 2
+
+    For i = 2 To lastRow
+        stockName = Trim(CStr(wsData.Cells(i, 1).Value))
+        stockCode = Trim(CStr(wsData.Cells(i, 2).Value))
+
+        ' C열에서 날짜 가져오기
+        If IsDate(wsData.Cells(i, 3).Value) Then
+            targetDate = Format(wsData.Cells(i, 3).Value, "yyyymmdd")
+        Else
+            targetDate = Trim(CStr(wsData.Cells(i, 3).Value))
+            targetDate = Replace(targetDate, "-", "")
+            targetDate = Replace(targetDate, "/", "")
+        End If
+
+        If stockName = "" And stockCode = "" Then
+            GoTo NextRowByDate
+        End If
+
+        If stockCode <> "" And Len(targetDate) = 8 Then
+            Application.StatusBar = "처리 중: " & stockName & " (" & processedCount + 1 & "/" & (lastRow - 1) & ")"
+            DoEvents
+
+            stockCode = CleanStockCode(stockCode)
+
+            ' 과거 시세 가져오기
+            Call GetNaverHistoricalPrice(stockCode, targetDate, currentPrice, priceChange, changePercent)
+
+            wsResult.Cells(rowNum, 1).Value = stockName
+            wsResult.Cells(rowNum, 2).Value = "'" & stockCode
+            wsResult.Cells(rowNum, 3).Value = Format(CDate(Left(targetDate, 4) & "-" & Mid(targetDate, 5, 2) & "-" & Right(targetDate, 2)), "yyyy-mm-dd")
+            wsResult.Cells(rowNum, 4).NumberFormat = "@"
+            wsResult.Cells(rowNum, 4).Value = currentPrice
+            wsResult.Cells(rowNum, 5).NumberFormat = "@"
+            wsResult.Cells(rowNum, 5).Value = priceChange
+            wsResult.Cells(rowNum, 6).NumberFormat = "@"
+            wsResult.Cells(rowNum, 6).Value = changePercent
+
+            ApplyPriceColorByDate wsResult, rowNum, priceChange
+
+            rowNum = rowNum + 1
+            processedCount = processedCount + 1
+
+            Delay 0.5
+        End If
+
+NextRowByDate:
+    Next i
+
+    wsResult.Columns("A:F").AutoFit
+
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+
+    MsgBox "완료! " & processedCount & "개 종목 처리됨", vbInformation, "완료"
+
+    wsResult.Activate
+    Exit Sub
+
+ErrorHandler:
+    Application.StatusBar = False
+    Application.ScreenUpdating = True
+    MsgBox "오류: " & Err.Description, vbCritical, "오류"
+End Sub
+
+' 과거 시세 가져오기 (네이버 일별 시세 API)
+Private Sub GetNaverHistoricalPrice(stockCode As String, targetDate As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
+    Dim http As Object
+    Dim url As String
+    Dim response As String
+    Dim lines() As String
+    Dim values() As String
+    Dim i As Long
+    Dim curPrice As Double
+    Dim prevPrice As Double
+    Dim diff As Double
+    Dim pct As Double
+    Dim foundDate As String
+    Dim cleanLine As String
+
+    On Error GoTo HistError
+
+    price = "-"
+    change = "-"
+    changePercent = "-"
+
+    ' 네이버 일별 시세 API (최근 30일)
+    url = "https://fchart.stock.naver.com/siseJson.nhn?symbol=" & stockCode & "&requestType=1&startTime=" & targetDate & "&endTime=" & targetDate & "&timeframe=day"
+
+    Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+    http.Open "GET", url, False
+    http.setRequestHeader "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    http.SetTimeouts 5000, 5000, 10000, 10000
+    http.send
+
+    If http.Status = 200 Then
+        response = http.responseText
+
+        ' 응답 정리
+        response = Replace(response, "[", "")
+        response = Replace(response, "]", "")
+        response = Replace(response, "'", "")
+        response = Replace(response, """", "")
+        response = Replace(response, vbLf, "|")
+        response = Replace(response, vbCr, "")
+
+        lines = Split(response, "|")
+
+        ' 데이터 행 찾기 (헤더 건너뛰기)
+        For i = 1 To UBound(lines)
+            cleanLine = Trim(lines(i))
+            If Len(cleanLine) > 10 Then
+                values = Split(cleanLine, ",")
+                If UBound(values) >= 4 Then
+                    ' 날짜,시가,고가,저가,종가,거래량
+                    foundDate = Trim(values(0))
+
+                    ' 종가 추출
+                    curPrice = Val(Trim(values(4)))
+
+                    If curPrice > 0 Then
+                        price = Format(curPrice, "#,##0")
+
+                        ' 전일 시세 가져오기 (전일대비 계산용)
+                        prevPrice = GetPreviousDayPrice(stockCode, targetDate)
+
+                        If prevPrice > 0 Then
+                            diff = curPrice - prevPrice
+                            pct = (diff / prevPrice) * 100
+
+                            If diff > 0 Then
+                                change = "+" & Format(diff, "#,##0")
+                                changePercent = "+" & Format(pct, "0.00") & "%"
+                            ElseIf diff < 0 Then
+                                change = Format(diff, "#,##0")
+                                changePercent = Format(pct, "0.00") & "%"
+                            Else
+                                change = "0"
+                                changePercent = "0.00%"
+                            End If
+                        End If
+
+                        Exit For
+                    End If
+                End If
+            End If
+        Next i
+    End If
+
+    Set http = Nothing
+    Exit Sub
+
+HistError:
+    price = "오류"
+    change = "-"
+    changePercent = "-"
+    If Not http Is Nothing Then Set http = Nothing
+End Sub
+
+' 전일 종가 가져오기
+Private Function GetPreviousDayPrice(stockCode As String, targetDate As String) As Double
+    Dim http As Object
+    Dim url As String
+    Dim response As String
+    Dim lines() As String
+    Dim values() As String
+    Dim i As Long
+    Dim prevDate As String
+    Dim cleanLine As String
+
+    On Error GoTo PrevError
+
+    ' 전일 날짜 계산 (간단히 하루 전)
+    prevDate = Format(DateAdd("d", -7, CDate(Left(targetDate, 4) & "-" & Mid(targetDate, 5, 2) & "-" & Right(targetDate, 2))), "yyyymmdd")
+
+    url = "https://fchart.stock.naver.com/siseJson.nhn?symbol=" & stockCode & "&requestType=1&startTime=" & prevDate & "&endTime=" & targetDate & "&timeframe=day"
+
+    Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+    http.Open "GET", url, False
+    http.setRequestHeader "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    http.SetTimeouts 5000, 5000, 10000, 10000
+    http.send
+
+    If http.Status = 200 Then
+        response = http.responseText
+
+        response = Replace(response, "[", "")
+        response = Replace(response, "]", "")
+        response = Replace(response, "'", "")
+        response = Replace(response, """", "")
+        response = Replace(response, vbLf, "|")
+        response = Replace(response, vbCr, "")
+
+        lines = Split(response, "|")
+
+        ' 마지막에서 두 번째 데이터 행이 전일
+        For i = UBound(lines) - 1 To 1 Step -1
+            cleanLine = Trim(lines(i))
+            If Len(cleanLine) > 10 Then
+                values = Split(cleanLine, ",")
+                If UBound(values) >= 4 Then
+                    GetPreviousDayPrice = Val(Trim(values(4)))
+                    Exit For
+                End If
+            End If
+        Next i
+    End If
+
+    Set http = Nothing
+    Exit Function
+
+PrevError:
+    GetPreviousDayPrice = 0
+    If Not http Is Nothing Then Set http = Nothing
+End Function
+
+' 날짜 포함 헤더 설정
+Private Sub SetupHeaderWithDate(ws As Worksheet)
+    ws.Cells(1, 1).Value = "종목명"
+    ws.Cells(1, 2).Value = "종목코드"
+    ws.Cells(1, 3).Value = "조회날짜"
+    ws.Cells(1, 4).Value = "종가"
+    ws.Cells(1, 5).Value = "전일대비"
+    ws.Cells(1, 6).Value = "등락률"
+
+    With ws.Range("A1:F1")
+        .Font.Bold = True
+        .Interior.Color = RGB(100, 149, 237)  ' Cornflower Blue
+        .Font.Color = RGB(255, 255, 255)
+        .HorizontalAlignment = xlCenter
+    End With
+End Sub
+
+' 날짜 조회용 색상 적용
+Private Sub ApplyPriceColorByDate(ws As Worksheet, rowNum As Long, priceChange As String)
+    Dim changeVal As Double
+
+    On Error Resume Next
+    changeVal = Val(Replace(Replace(priceChange, "+", ""), ",", ""))
+    On Error GoTo 0
+
+    If changeVal > 0 Then
+        ws.Cells(rowNum, 5).Font.Color = RGB(255, 0, 0)
+        ws.Cells(rowNum, 6).Font.Color = RGB(255, 0, 0)
+    ElseIf changeVal < 0 Then
+        ws.Cells(rowNum, 5).Font.Color = RGB(0, 0, 255)
+        ws.Cells(rowNum, 6).Font.Color = RGB(0, 0, 255)
+    End If
+End Sub
+
+' =====================================================
 ' 테스트 함수
 ' =====================================================
 Sub TestSingleStock()
