@@ -1,22 +1,24 @@
 ' =====================================================
-' 주식 현재가 추적 VBA 스크립트 v5 (KRX API)
+' 주식 현재가 추적 VBA 스크립트 v6 (Yahoo Finance)
 '
 ' 사용법:
 ' 1. 엑셀에서 Alt + F11로 VBA 편집기 열기
 ' 2. 삽입 > 모듈
 ' 3. 이 코드 붙여넣기
-' 4. UpdateStockPrices 실행 (F5 또는 매크로 실행)
+' 4. UpdateStockPrices 실행
 '
 ' 전제조건:
 ' - '데이터' 시트: 1행 헤더, 2행부터 데이터
-'   A열: 종목명, B열: 종목코드
+'   A열: 종목명, B열: 종목코드, C열(선택): 시장(KS/KQ)
 ' - 인터넷 연결 필요
+'
+' 참고: C열에 시장 구분이 없으면 KS(코스피)로 간주
 ' =====================================================
 
 Option Explicit
 
 ' =====================================================
-' 메인 함수: 주식 현재가 업데이트
+' 메인 함수
 ' =====================================================
 Sub UpdateStockPrices()
     Dim wsData As Worksheet
@@ -27,6 +29,7 @@ Sub UpdateStockPrices()
     Dim rowNum As Long
     Dim stockName As String
     Dim stockCode As String
+    Dim market As String
     Dim currentPrice As String
     Dim priceChange As String
     Dim changePercent As String
@@ -65,6 +68,10 @@ Sub UpdateStockPrices()
         stockName = Trim(CStr(wsData.Cells(i, 1).Value))
         stockCode = Trim(CStr(wsData.Cells(i, 2).Value))
 
+        ' C열에 시장 구분이 있으면 사용, 없으면 KS(코스피)
+        market = Trim(CStr(wsData.Cells(i, 3).Value))
+        If market = "" Then market = "KS"
+
         If stockName = "" And stockCode = "" Then
             GoTo NextRow
         End If
@@ -75,8 +82,8 @@ Sub UpdateStockPrices()
 
             stockCode = CleanStockCode(stockCode)
 
-            ' KRX API로 현재가 가져오기
-            Call GetKRXStockPrice(stockCode, currentPrice, priceChange, changePercent)
+            ' Yahoo Finance API
+            Call GetYahooStockPrice(stockCode, market, currentPrice, priceChange, changePercent)
 
             wsToday.Cells(rowNum, 1).Value = stockName
             wsToday.Cells(rowNum, 2).Value = "'" & stockCode
@@ -90,7 +97,7 @@ Sub UpdateStockPrices()
             rowNum = rowNum + 1
             processedCount = processedCount + 1
 
-            Delay 0.3
+            Delay 0.5
         End If
 
 NextRow:
@@ -113,188 +120,52 @@ ErrorHandler:
 End Sub
 
 ' =====================================================
-' KRX API로 주가 데이터 가져오기
+' Yahoo Finance API
 ' =====================================================
-Private Sub GetKRXStockPrice(stockCode As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
+Private Sub GetYahooStockPrice(stockCode As String, market As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
     Dim http As Object
     Dim url As String
-    Dim postData As String
     Dim response As String
+    Dim symbol As String
     Dim curPrice As Double
-    Dim prevPrice As Double
-    Dim diffPrice As Double
-    Dim diffPct As Double
+    Dim prevClose As Double
+    Dim diff As Double
+    Dim pct As Double
 
-    On Error GoTo KRXError
+    On Error GoTo YahooError
 
     price = "-"
     change = "-"
     changePercent = "-"
 
-    ' KRX 정보데이터시스템 API
-    url = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+    ' 심볼 생성 (예: 005930.KS)
+    symbol = stockCode & "." & UCase(market)
 
-    ' POST 데이터
-    postData = "bld=dbms/MDC/STAT/standard/MDCSTAT01501" & _
-               "&locale=ko_KR" & _
-               "&isuCd=KR7" & stockCode & "003" & _
-               "&isuCd2=KR7" & stockCode & "003" & _
-               "&strtDd=" & Format(Date, "yyyymmdd") & _
-               "&endDd=" & Format(Date, "yyyymmdd") & _
-               "&share=1" & _
-               "&money=1"
-
-    Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
-    http.Open "POST", url, False
-    http.setRequestHeader "Content-Type", "application/x-www-form-urlencoded; charset=UTF-8"
-    http.setRequestHeader "User-Agent", "Mozilla/5.0"
-    http.setRequestHeader "Referer", "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201010101"
-    http.send postData
-
-    If http.Status = 200 Then
-        response = http.responseText
-
-        ' JSON에서 값 추출
-        curPrice = ExtractKRXValue(response, "TDD_CLSPRC")
-        prevPrice = ExtractKRXValue(response, "TDD_OPNPRC")
-
-        If curPrice = 0 Then
-            ' 대체 필드 시도
-            curPrice = ExtractKRXValue(response, "CLSPRC")
-        End If
-
-        If curPrice > 0 Then
-            price = Format(curPrice, "#,##0")
-
-            ' 전일대비 계산
-            diffPrice = ExtractKRXValue(response, "CMPPREVDD_PRC")
-            diffPct = ExtractKRXValue(response, "FLUC_RT")
-
-            If diffPrice <> 0 Or diffPct <> 0 Then
-                If diffPrice > 0 Then
-                    change = "+" & Format(diffPrice, "#,##0")
-                ElseIf diffPrice < 0 Then
-                    change = Format(diffPrice, "#,##0")
-                Else
-                    change = "0"
-                End If
-
-                If diffPct > 0 Then
-                    changePercent = "+" & Format(diffPct, "0.00") & "%"
-                ElseIf diffPct < 0 Then
-                    changePercent = Format(diffPct, "0.00") & "%"
-                Else
-                    changePercent = "0.00%"
-                End If
-            End If
-        Else
-            ' KRX 실패시 네이버로 폴백
-            Call GetNaverStockPrice(stockCode, price, change, changePercent)
-        End If
-    Else
-        ' HTTP 실패시 네이버로 폴백
-        Call GetNaverStockPrice(stockCode, price, change, changePercent)
-    End If
-
-    Set http = Nothing
-    Exit Sub
-
-KRXError:
-    ' 에러시 네이버로 폴백
-    Call GetNaverStockPrice(stockCode, price, change, changePercent)
-    If Not http Is Nothing Then Set http = Nothing
-End Sub
-
-' KRX JSON에서 값 추출
-Private Function ExtractKRXValue(json As String, key As String) As Double
-    Dim searchKey As String
-    Dim startPos As Long
-    Dim endPos As Long
-    Dim value As String
-    Dim i As Long
-    Dim c As String
-
-    On Error GoTo ExtractErr
-
-    searchKey = """" & key & """:"
-
-    startPos = InStr(1, json, searchKey, vbTextCompare)
-    If startPos = 0 Then
-        ExtractKRXValue = 0
-        Exit Function
-    End If
-
-    startPos = startPos + Len(searchKey)
-
-    ' 공백 건너뛰기
-    Do While Mid(json, startPos, 1) = " " Or Mid(json, startPos, 1) = """"
-        startPos = startPos + 1
-    Loop
-
-    ' 값 추출 (숫자와 마이너스, 소수점만)
-    value = ""
-    For i = startPos To Len(json)
-        c = Mid(json, i, 1)
-        If (c >= "0" And c <= "9") Or c = "-" Or c = "." Then
-            value = value & c
-        ElseIf c = "," And Len(value) > 0 Then
-            ' 천단위 구분자는 무시
-        ElseIf Len(value) > 0 Then
-            Exit For
-        End If
-    Next i
-
-    If Len(value) > 0 Then
-        ExtractKRXValue = Val(value)
-    Else
-        ExtractKRXValue = 0
-    End If
-
-    Exit Function
-
-ExtractErr:
-    ExtractKRXValue = 0
-End Function
-
-' =====================================================
-' 네이버 금융 (폴백용)
-' =====================================================
-Private Sub GetNaverStockPrice(stockCode As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
-    Dim http As Object
-    Dim url As String
-    Dim response As String
-    Dim curPrice As Double
-    Dim prevPrice As Double
-
-    On Error GoTo NaverError
-
-    price = "-"
-    change = "-"
-    changePercent = "-"
-
-    ' 네이버 금융 시세 조회
-    url = "https://fchart.stock.naver.com/siseJson.nhn?symbol=" & stockCode & "&requestType=1&count=2"
+    ' Yahoo Finance API
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/" & symbol & "?interval=1d&range=1d"
 
     Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
     http.Open "GET", url, False
-    http.setRequestHeader "User-Agent", "Mozilla/5.0"
+    http.setRequestHeader "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     http.send
 
     If http.Status = 200 Then
         response = http.responseText
 
-        ' 간단한 파싱 (응답: [["날짜","시가","고가","저가","종가","거래량"], ...])
-        curPrice = ExtractNaverPrice(response, 1)
-        prevPrice = ExtractNaverPrice(response, 2)
+        ' 현재가 추출
+        curPrice = ExtractYahooValue(response, "regularMarketPrice")
+        prevClose = ExtractYahooValue(response, "chartPreviousClose")
+
+        If curPrice = 0 Then
+            curPrice = ExtractYahooValue(response, "close")
+        End If
 
         If curPrice > 0 Then
             price = Format(curPrice, "#,##0")
 
-            If prevPrice > 0 Then
-                Dim diff As Double
-                Dim pct As Double
-                diff = curPrice - prevPrice
-                pct = (diff / prevPrice) * 100
+            If prevClose > 0 Then
+                diff = curPrice - prevClose
+                pct = (diff / prevClose) * 100
 
                 If diff > 0 Then
                     change = "+" & Format(diff, "#,##0")
@@ -313,61 +184,73 @@ Private Sub GetNaverStockPrice(stockCode As String, ByRef price As String, ByRef
     Set http = Nothing
     Exit Sub
 
-NaverError:
+YahooError:
     price = "오류"
     change = "-"
     changePercent = "-"
     If Not http Is Nothing Then Set http = Nothing
 End Sub
 
-' 네이버 시세 JSON에서 종가 추출
-Private Function ExtractNaverPrice(response As String, rowNum As Long) As Double
-    Dim lines() As String
-    Dim dataLine As String
-    Dim values() As String
+' Yahoo JSON에서 값 추출
+Private Function ExtractYahooValue(json As String, key As String) As Double
+    Dim searchKey As String
+    Dim startPos As Long
+    Dim value As String
     Dim i As Long
-    Dim lineCount As Long
-    Dim cleanResponse As String
+    Dim c As String
 
-    On Error GoTo ExtractNaverErr
+    On Error GoTo ExtractErr
 
-    ' 응답 정리
-    cleanResponse = response
-    cleanResponse = Replace(cleanResponse, "[", "")
-    cleanResponse = Replace(cleanResponse, "]", "")
-    cleanResponse = Replace(cleanResponse, """", "")
-    cleanResponse = Replace(cleanResponse, "'", "")
-    cleanResponse = Replace(cleanResponse, vbLf, "")
-    cleanResponse = Replace(cleanResponse, vbCr, "")
-    cleanResponse = Replace(cleanResponse, Chr(10), "")
-    cleanResponse = Replace(cleanResponse, Chr(13), "")
+    ' "key": 형식으로 검색
+    searchKey = """" & key & """:"
 
-    ' 줄 단위로 분리 (각 행은 콤마로 구분된 6개 값)
-    ' 헤더 행 건너뛰고 데이터 행 찾기
-    Dim allValues() As String
-    allValues = Split(cleanResponse, ",")
+    startPos = InStr(1, json, searchKey, vbTextCompare)
+    If startPos = 0 Then
+        ExtractYahooValue = 0
+        Exit Function
+    End If
 
-    ' 각 행은 6개 값 (날짜,시가,고가,저가,종가,거래량)
-    ' rowNum=1이면 첫번째 데이터 (인덱스 6~11), rowNum=2면 두번째 데이터 (인덱스 12~17)
-    Dim idx As Long
-    idx = 6 + (rowNum - 1) * 6 + 4  ' 종가 위치
+    startPos = startPos + Len(searchKey)
 
-    If idx <= UBound(allValues) Then
-        ExtractNaverPrice = Val(Trim(allValues(idx)))
+    ' 공백과 따옴표 건너뛰기
+    Do While startPos <= Len(json)
+        c = Mid(json, startPos, 1)
+        If c <> " " And c <> """" Then Exit Do
+        startPos = startPos + 1
+    Loop
+
+    ' null 체크
+    If Mid(json, startPos, 4) = "null" Then
+        ExtractYahooValue = 0
+        Exit Function
+    End If
+
+    ' 숫자 추출
+    value = ""
+    For i = startPos To Len(json)
+        c = Mid(json, i, 1)
+        If (c >= "0" And c <= "9") Or c = "." Or c = "-" Then
+            value = value & c
+        ElseIf Len(value) > 0 Then
+            Exit For
+        End If
+    Next i
+
+    If Len(value) > 0 Then
+        ExtractYahooValue = Val(value)
     Else
-        ExtractNaverPrice = 0
+        ExtractYahooValue = 0
     End If
 
     Exit Function
 
-ExtractNaverErr:
-    ExtractNaverPrice = 0
+ExtractErr:
+    ExtractYahooValue = 0
 End Function
 
 ' =====================================================
 ' 시트 관리
 ' =====================================================
-
 Private Function GetOrCreateSheet(sheetName As String) As Worksheet
     Dim ws As Worksheet
     Dim lastRow As Long
@@ -409,7 +292,6 @@ End Sub
 ' =====================================================
 ' 유틸리티
 ' =====================================================
-
 Private Function CleanStockCode(ByVal code As String) As String
     Dim result As String
     Dim i As Long
@@ -461,17 +343,21 @@ End Sub
 ' =====================================================
 Sub TestSingleStock()
     Dim code As String
+    Dim market As String
     Dim price As String
     Dim change As String
     Dim pct As String
 
-    code = InputBox("종목코드 입력 (예: 005930):", "테스트", "005930")
+    code = InputBox("종목코드 (예: 005930):", "테스트", "005930")
     If code = "" Then Exit Sub
 
-    code = CleanStockCode(code)
-    Call GetKRXStockPrice(code, price, change, pct)
+    market = InputBox("시장 (KS=코스피, KQ=코스닥):", "시장 선택", "KS")
+    If market = "" Then market = "KS"
 
-    MsgBox "종목코드: " & code & vbCrLf & _
+    code = CleanStockCode(code)
+    Call GetYahooStockPrice(code, market, price, change, pct)
+
+    MsgBox "종목: " & code & "." & market & vbCrLf & _
            "현재가: " & price & vbCrLf & _
            "전일대비: " & change & vbCrLf & _
            "등락률: " & pct, vbInformation, "테스트 결과"
