@@ -115,16 +115,16 @@ ErrorHandler:
 End Sub
 
 ' =====================================================
-' 네이버 금융 HTML 파싱
+' 네이버 금융 API (JSON)
 ' =====================================================
 Private Sub GetNaverStockPrice(stockCode As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
     Dim http As Object
     Dim url As String
     Dim response As String
-    Dim curPrice As Long
-    Dim prevPrice As Long
-    Dim diff As Long
-    Dim pct As Double
+    Dim curPrice As String
+    Dim diffPrice As String
+    Dim pctVal As String
+    Dim isUp As Boolean
 
     On Error GoTo NaverError
 
@@ -132,8 +132,8 @@ Private Sub GetNaverStockPrice(stockCode As String, ByRef price As String, ByRef
     change = "-"
     changePercent = "-"
 
-    ' 네이버 금융 시세 페이지
-    url = "https://finance.naver.com/item/sise.naver?code=" & stockCode
+    ' 네이버 모바일 주식 API (JSON)
+    url = "https://m.stock.naver.com/api/stock/" & stockCode & "/basic"
 
     Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
     http.Open "GET", url, False
@@ -144,39 +144,31 @@ Private Sub GetNaverStockPrice(stockCode As String, ByRef price As String, ByRef
     If http.Status = 200 Then
         response = http.responseText
 
-        ' 현재가 추출 (id="_nowVal")
-        curPrice = ExtractPriceFromHtml(response, "_nowVal")
+        ' JSON에서 문자열 값 추출 (콤마 포함)
+        curPrice = ExtractJsonString(response, "closePrice")
+        diffPrice = ExtractJsonString(response, "compareToPreviousClosePrice")
+        pctVal = ExtractJsonString(response, "fluctuationsRatio")
 
-        ' 전일가 추출 (id="_rate")
-        prevPrice = ExtractPriceFromHtml(response, "_quant")
+        ' 상승/하락 확인
+        isUp = InStr(1, response, """text"":""상승""", vbTextCompare) > 0
 
-        ' 전일가가 없으면 다른 방법 시도
-        If prevPrice = 0 Then
-            prevPrice = ExtractYesterdayPrice(response)
-        End If
+        If Len(curPrice) > 0 Then
+            price = curPrice  ' 이미 콤마 포함된 형식
 
-        If curPrice > 0 Then
-            price = Format(curPrice, "#,##0")
-
-            ' 전일대비 계산
-            If prevPrice > 0 Then
-                diff = curPrice - prevPrice
-                pct = (CDbl(diff) / CDbl(prevPrice)) * 100
-
-                If diff > 0 Then
-                    change = "+" & Format(diff, "#,##0")
-                    changePercent = "+" & Format(pct, "0.00") & "%"
-                ElseIf diff < 0 Then
-                    change = Format(diff, "#,##0")
-                    changePercent = Format(pct, "0.00") & "%"
+            If Len(diffPrice) > 0 Then
+                If isUp Then
+                    change = "+" & diffPrice
                 Else
-                    change = "0"
-                    changePercent = "0.00%"
+                    change = "-" & diffPrice
                 End If
-            Else
-                ' 전일가를 못 구하면 페이지에서 직접 추출
-                change = ExtractChangeFromHtml(response)
-                changePercent = ExtractPercentFromHtml(response)
+            End If
+
+            If Len(pctVal) > 0 Then
+                If isUp Then
+                    changePercent = "+" & pctVal & "%"
+                Else
+                    changePercent = "-" & pctVal & "%"
+                End If
             End If
         End If
     End If
@@ -191,197 +183,39 @@ NaverError:
     If Not http Is Nothing Then Set http = Nothing
 End Sub
 
-' HTML에서 ID로 가격 추출
-Private Function ExtractPriceFromHtml(html As String, tagId As String) As Long
-    Dim searchStr As String
+' JSON에서 문자열 값 추출 (따옴표 안의 값)
+Private Function ExtractJsonString(json As String, key As String) As String
+    Dim searchKey As String
     Dim startPos As Long
     Dim endPos As Long
-    Dim priceStr As String
-    Dim i As Long
-    Dim c As String
+    Dim value As String
 
     On Error GoTo ExtractErr
 
-    searchStr = "id=""" & tagId & """"
-    startPos = InStr(1, html, searchStr, vbTextCompare)
+    searchKey = """" & key & """:"""
 
+    startPos = InStr(1, json, searchKey, vbTextCompare)
     If startPos = 0 Then
-        ExtractPriceFromHtml = 0
+        ExtractJsonString = ""
         Exit Function
     End If
 
-    ' > 찾기
-    startPos = InStr(startPos, html, ">", vbTextCompare)
-    If startPos = 0 Then
-        ExtractPriceFromHtml = 0
+    startPos = startPos + Len(searchKey)
+
+    ' 닫는 따옴표 찾기
+    endPos = InStr(startPos, json, """", vbTextCompare)
+    If endPos = 0 Then
+        ExtractJsonString = ""
         Exit Function
     End If
-    startPos = startPos + 1
 
-    ' 숫자만 추출
-    priceStr = ""
-    For i = startPos To startPos + 50
-        If i > Len(html) Then Exit For
-        c = Mid(html, i, 1)
-        If c >= "0" And c <= "9" Then
-            priceStr = priceStr & c
-        ElseIf c = "<" Then
-            Exit For
-        End If
-    Next i
-
-    If Len(priceStr) > 0 Then
-        ExtractPriceFromHtml = CLng(priceStr)
-    Else
-        ExtractPriceFromHtml = 0
-    End If
+    value = Mid(json, startPos, endPos - startPos)
+    ExtractJsonString = value
 
     Exit Function
 
 ExtractErr:
-    ExtractPriceFromHtml = 0
-End Function
-
-' HTML에서 전일가 추출
-Private Function ExtractYesterdayPrice(html As String) As Long
-    Dim searchStr As String
-    Dim startPos As Long
-    Dim priceStr As String
-    Dim i As Long
-    Dim c As String
-
-    On Error GoTo ExtractErr
-
-    ' "전일가" 또는 "전일" 찾기
-    searchStr = "전일"
-    startPos = InStr(1, html, searchStr, vbTextCompare)
-
-    If startPos = 0 Then
-        ExtractYesterdayPrice = 0
-        Exit Function
-    End If
-
-    ' 숫자 찾기
-    priceStr = ""
-    For i = startPos To startPos + 200
-        If i > Len(html) Then Exit For
-        c = Mid(html, i, 1)
-        If c >= "0" And c <= "9" Then
-            priceStr = priceStr & c
-        ElseIf Len(priceStr) >= 4 Then
-            Exit For
-        End If
-    Next i
-
-    If Len(priceStr) >= 4 Then
-        ExtractYesterdayPrice = CLng(priceStr)
-    Else
-        ExtractYesterdayPrice = 0
-    End If
-
-    Exit Function
-
-ExtractErr:
-    ExtractYesterdayPrice = 0
-End Function
-
-' HTML에서 전일대비 추출
-Private Function ExtractChangeFromHtml(html As String) As String
-    Dim searchStr As String
-    Dim startPos As Long
-    Dim priceStr As String
-    Dim i As Long
-    Dim c As String
-    Dim isUp As Boolean
-
-    On Error GoTo ExtractErr
-
-    ' 상승/하락 확인
-    isUp = InStr(1, html, "ico_up", vbTextCompare) > 0
-
-    ' "전일대비" 찾기
-    searchStr = "_diff"
-    startPos = InStr(1, html, searchStr, vbTextCompare)
-
-    If startPos = 0 Then
-        ExtractChangeFromHtml = "-"
-        Exit Function
-    End If
-
-    ' 숫자 찾기
-    priceStr = ""
-    For i = startPos To startPos + 100
-        If i > Len(html) Then Exit For
-        c = Mid(html, i, 1)
-        If c >= "0" And c <= "9" Then
-            priceStr = priceStr & c
-        ElseIf Len(priceStr) > 0 And c = "<" Then
-            Exit For
-        End If
-    Next i
-
-    If Len(priceStr) > 0 Then
-        If isUp Then
-            ExtractChangeFromHtml = "+" & Format(CLng(priceStr), "#,##0")
-        Else
-            ExtractChangeFromHtml = "-" & Format(CLng(priceStr), "#,##0")
-        End If
-    Else
-        ExtractChangeFromHtml = "0"
-    End If
-
-    Exit Function
-
-ExtractErr:
-    ExtractChangeFromHtml = "-"
-End Function
-
-' HTML에서 등락률 추출
-Private Function ExtractPercentFromHtml(html As String) As String
-    Dim searchStr As String
-    Dim startPos As Long
-    Dim pctStr As String
-    Dim i As Long
-    Dim c As String
-    Dim isUp As Boolean
-
-    On Error GoTo ExtractErr
-
-    isUp = InStr(1, html, "ico_up", vbTextCompare) > 0
-
-    searchStr = "_rate"
-    startPos = InStr(1, html, searchStr, vbTextCompare)
-
-    If startPos = 0 Then
-        ExtractPercentFromHtml = "-"
-        Exit Function
-    End If
-
-    pctStr = ""
-    For i = startPos To startPos + 50
-        If i > Len(html) Then Exit For
-        c = Mid(html, i, 1)
-        If (c >= "0" And c <= "9") Or c = "." Then
-            pctStr = pctStr & c
-        ElseIf Len(pctStr) > 0 And (c = "%" Or c = "<") Then
-            Exit For
-        End If
-    Next i
-
-    If Len(pctStr) > 0 Then
-        If isUp Then
-            ExtractPercentFromHtml = "+" & pctStr & "%"
-        Else
-            ExtractPercentFromHtml = "-" & pctStr & "%"
-        End If
-    Else
-        ExtractPercentFromHtml = "0.00%"
-    End If
-
-    Exit Function
-
-ExtractErr:
-    ExtractPercentFromHtml = "-"
+    ExtractJsonString = ""
 End Function
 
 ' =====================================================
