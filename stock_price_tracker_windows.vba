@@ -54,7 +54,7 @@ Sub UpdateStockPrices()
     End If
 
     Set wsToday = GetOrCreateSheet(todayName)
-    SetupHeader wsToday
+    SetupHeader wsToday, todayName
 
     lastRow = wsData.Cells(wsData.Rows.count, "A").End(xlUp).Row
 
@@ -67,7 +67,7 @@ Sub UpdateStockPrices()
     Application.StatusBar = "주식 현재가 업데이트 중..."
 
     processedCount = 0
-    rowNum = 2
+    rowNum = 3
 
     For i = 2 To lastRow
         stockName = Trim(CStr(wsData.Cells(i, 1).Value))
@@ -258,15 +258,28 @@ Private Function GetOrCreateSheet(sheetName As String) As Worksheet
     Set GetOrCreateSheet = ws
 End Function
 
-Private Sub SetupHeader(ws As Worksheet)
-    ws.Cells(1, 1).Value = "종목명"
-    ws.Cells(1, 2).Value = "종목코드"
-    ws.Cells(1, 3).Value = "현재가"
-    ws.Cells(1, 4).Value = "전일대비"
-    ws.Cells(1, 5).Value = "등락률"
-    ws.Cells(1, 6).Value = "업데이트시간"
+Private Sub SetupHeader(ws As Worksheet, Optional targetDate As String = "")
+    ' 1행: 조회 날짜 표시
+    If targetDate = "" Then targetDate = Format(Date, "yyyy-mm-dd")
+    ws.Range("A1:F1").Merge
+    ws.Cells(1, 1).Value = "조회일자: " & targetDate
+    With ws.Range("A1")
+        .Font.Bold = True
+        .Font.Size = 14
+        .HorizontalAlignment = xlCenter
+        .Interior.Color = RGB(50, 50, 50)
+        .Font.Color = RGB(255, 255, 255)
+    End With
 
-    With ws.Range("A1:F1")
+    ' 2행: 컬럼 헤더
+    ws.Cells(2, 1).Value = "종목명"
+    ws.Cells(2, 2).Value = "종목코드"
+    ws.Cells(2, 3).Value = "현재가"
+    ws.Cells(2, 4).Value = "전일대비"
+    ws.Cells(2, 5).Value = "등락률"
+    ws.Cells(2, 6).Value = "업데이트시간"
+
+    With ws.Range("A2:F2")
         .Font.Bold = True
         .Interior.Color = RGB(70, 130, 180)
         .Font.Color = RGB(255, 255, 255)
@@ -404,9 +417,9 @@ Sub UpdateStockPricesByDate()
 
         ' 해당 날짜 탭 생성/가져오기
         Set wsResult = GetOrCreateSheet(targetDateFormatted)
-        SetupHeaderForHistorical wsResult
+        SetupHeaderForHistorical wsResult, targetDateFormatted
 
-        rowNum = 2
+        rowNum = 3
 
         ' 모든 종목에 대해 해당 날짜 시세 조회
         For j = 2 To lastRow
@@ -614,16 +627,28 @@ HistError:
     If Not http Is Nothing Then Set http = Nothing
 End Sub
 
-' 과거 시세 조회용 헤더 설정 (탭 이름이 날짜이므로 조회날짜 컬럼 제외)
-Private Sub SetupHeaderForHistorical(ws As Worksheet)
-    ws.Cells(1, 1).Value = "종목명"
-    ws.Cells(1, 2).Value = "종목코드"
-    ws.Cells(1, 3).Value = "종가"
-    ws.Cells(1, 4).Value = "전일대비"
-    ws.Cells(1, 5).Value = "등락률"
-    ws.Cells(1, 6).Value = "업데이트시간"
+' 과거 시세 조회용 헤더 설정
+Private Sub SetupHeaderForHistorical(ws As Worksheet, targetDate As String)
+    ' 1행: 조회 날짜 표시
+    ws.Range("A1:F1").Merge
+    ws.Cells(1, 1).Value = "조회일자: " & targetDate
+    With ws.Range("A1")
+        .Font.Bold = True
+        .Font.Size = 14
+        .HorizontalAlignment = xlCenter
+        .Interior.Color = RGB(50, 50, 50)
+        .Font.Color = RGB(255, 255, 255)
+    End With
 
-    With ws.Range("A1:F1")
+    ' 2행: 컬럼 헤더
+    ws.Cells(2, 1).Value = "종목명"
+    ws.Cells(2, 2).Value = "종목코드"
+    ws.Cells(2, 3).Value = "종가"
+    ws.Cells(2, 4).Value = "전일대비"
+    ws.Cells(2, 5).Value = "등락률"
+    ws.Cells(2, 6).Value = "업데이트시간"
+
+    With ws.Range("A2:F2")
         .Font.Bold = True
         .Interior.Color = RGB(100, 149, 237)  ' Cornflower Blue
         .Font.Color = RGB(255, 255, 255)
