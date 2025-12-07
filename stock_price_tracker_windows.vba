@@ -1,17 +1,15 @@
 ' =====================================================
-' 주식 현재가 추적 VBA 스크립트 v7 (Mac용 - curl 사용)
-'
-' Mac Excel 전용!
-' curl 명령어로 Yahoo Finance API 호출
+' 주식 현재가 추적 VBA 스크립트 (Windows용 - 네이버 금융)
 '
 ' 사용법:
-' 1. 엑셀에서 Alt + F11 (또는 Cmd + Opt + F11)
+' 1. 엑셀에서 Alt + F11로 VBA 편집기 열기
 ' 2. 삽입 > 모듈
 ' 3. 이 코드 붙여넣기
 ' 4. UpdateStockPrices 실행
 '
 ' 데이터 시트 구조:
-' A열: 종목명, B열: 종목코드, C열(선택): 시장(KS/KQ)
+' 1행: 헤더 (종목명, 종목코드)
+' 2행부터: 데이터 (A열: 종목명, B열: 종목코드)
 ' =====================================================
 
 Option Explicit
@@ -28,7 +26,6 @@ Sub UpdateStockPrices()
     Dim rowNum As Long
     Dim stockName As String
     Dim stockCode As String
-    Dim market As String
     Dim currentPrice As String
     Dim priceChange As String
     Dim changePercent As String
@@ -67,9 +64,6 @@ Sub UpdateStockPrices()
         stockName = Trim(CStr(wsData.Cells(i, 1).Value))
         stockCode = Trim(CStr(wsData.Cells(i, 2).Value))
 
-        market = Trim(CStr(wsData.Cells(i, 3).Value))
-        If market = "" Then market = "KS"
-
         If stockName = "" And stockCode = "" Then
             GoTo NextRow
         End If
@@ -80,8 +74,8 @@ Sub UpdateStockPrices()
 
             stockCode = CleanStockCode(stockCode)
 
-            ' Mac curl로 현재가 가져오기
-            Call GetStockPriceMac(stockCode, market, currentPrice, priceChange, changePercent)
+            ' 네이버 금융에서 현재가 가져오기
+            Call GetNaverStockPrice(stockCode, currentPrice, priceChange, changePercent)
 
             wsToday.Cells(rowNum, 1).Value = stockName
             wsToday.Cells(rowNum, 2).Value = "'" & stockCode
@@ -94,6 +88,8 @@ Sub UpdateStockPrices()
 
             rowNum = rowNum + 1
             processedCount = processedCount + 1
+
+            Delay 0.5
         End If
 
 NextRow:
@@ -116,10 +112,10 @@ ErrorHandler:
 End Sub
 
 ' =====================================================
-' Mac용 HTTP 요청 (curl 사용)
+' 네이버 금융 API
 ' =====================================================
-Private Sub GetStockPriceMac(stockCode As String, market As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
-    Dim symbol As String
+Private Sub GetNaverStockPrice(stockCode As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
+    Dim http As Object
     Dim url As String
     Dim response As String
     Dim curPrice As Double
@@ -127,74 +123,65 @@ Private Sub GetStockPriceMac(stockCode As String, market As String, ByRef price 
     Dim diff As Double
     Dim pct As Double
 
-    On Error GoTo MacError
+    On Error GoTo NaverError
 
     price = "-"
     change = "-"
     changePercent = "-"
 
-    symbol = stockCode & "." & UCase(market)
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/" & symbol & "?interval=1d&range=1d"
+    ' 네이버 모바일 주식 API (JSON)
+    url = "https://m.stock.naver.com/api/stock/" & stockCode & "/basic"
 
-    ' Mac에서 curl 실행
-    response = ExecuteCurl(url)
+    Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+    http.Open "GET", url, False
+    http.setRequestHeader "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    http.SetTimeouts 5000, 5000, 10000, 10000
+    http.send
 
-    If Len(response) > 0 Then
-        curPrice = ExtractJsonValue(response, "regularMarketPrice")
-        If curPrice = 0 Then curPrice = ExtractJsonValue(response, "close")
+    If http.Status = 200 Then
+        response = http.responseText
 
-        prevClose = ExtractJsonValue(response, "chartPreviousClose")
-        If prevClose = 0 Then prevClose = ExtractJsonValue(response, "previousClose")
+        ' JSON에서 값 추출
+        curPrice = ExtractJsonNumber(response, "closePrice")
+        If curPrice = 0 Then curPrice = ExtractJsonNumber(response, "currentPrice")
+
+        prevClose = ExtractJsonNumber(response, "compareToPreviousClosePrice")
+        pct = ExtractJsonNumber(response, "fluctuationsRatio")
 
         If curPrice > 0 Then
             price = Format(curPrice, "#,##0")
 
-            If prevClose > 0 Then
-                diff = curPrice - prevClose
-                pct = (diff / prevClose) * 100
+            diff = prevClose
+            If diff > 0 Then
+                change = "+" & Format(diff, "#,##0")
+            ElseIf diff < 0 Then
+                change = Format(diff, "#,##0")
+            Else
+                change = "0"
+            End If
 
-                If diff > 0 Then
-                    change = "+" & Format(diff, "#,##0")
-                    changePercent = "+" & Format(pct, "0.00") & "%"
-                ElseIf diff < 0 Then
-                    change = Format(diff, "#,##0")
-                    changePercent = Format(pct, "0.00") & "%"
-                Else
-                    change = "0"
-                    changePercent = "0.00%"
-                End If
+            If pct > 0 Then
+                changePercent = "+" & Format(pct, "0.00") & "%"
+            ElseIf pct < 0 Then
+                changePercent = Format(pct, "0.00") & "%"
+            Else
+                changePercent = "0.00%"
             End If
         End If
     End If
 
+    Set http = Nothing
     Exit Sub
 
-MacError:
+NaverError:
     price = "오류"
     change = "-"
     changePercent = "-"
+    If Not http Is Nothing Then Set http = Nothing
 End Sub
 
-' Mac에서 curl 명령 실행
-Private Function ExecuteCurl(url As String) As String
-    Dim scriptStr As String
-    Dim result As String
-
-    On Error GoTo CurlError
-
-    ' AppleScript를 통해 curl 실행
-    scriptStr = "do shell script ""curl -s -L '" & url & "'"""
-
-    result = MacScript(scriptStr)
-    ExecuteCurl = result
-    Exit Function
-
-CurlError:
-    ExecuteCurl = ""
-End Function
-
-' JSON에서 값 추출
-Private Function ExtractJsonValue(json As String, key As String) As Double
+' JSON에서 숫자 값 추출
+Private Function ExtractJsonNumber(json As String, key As String) As Double
     Dim searchKey As String
     Dim startPos As Long
     Dim value As String
@@ -207,7 +194,7 @@ Private Function ExtractJsonValue(json As String, key As String) As Double
 
     startPos = InStr(1, json, searchKey, vbTextCompare)
     If startPos = 0 Then
-        ExtractJsonValue = 0
+        ExtractJsonNumber = 0
         Exit Function
     End If
 
@@ -220,11 +207,13 @@ Private Function ExtractJsonValue(json As String, key As String) As Double
         startPos = startPos + 1
     Loop
 
+    ' null 체크
     If Mid(json, startPos, 4) = "null" Then
-        ExtractJsonValue = 0
+        ExtractJsonNumber = 0
         Exit Function
     End If
 
+    ' 숫자 추출
     value = ""
     For i = startPos To Len(json)
         c = Mid(json, i, 1)
@@ -236,15 +225,15 @@ Private Function ExtractJsonValue(json As String, key As String) As Double
     Next i
 
     If Len(value) > 0 Then
-        ExtractJsonValue = Val(value)
+        ExtractJsonNumber = Val(value)
     Else
-        ExtractJsonValue = 0
+        ExtractJsonNumber = 0
     End If
 
     Exit Function
 
 ExtractErr:
-    ExtractJsonValue = 0
+    ExtractJsonNumber = 0
 End Function
 
 ' =====================================================
@@ -313,6 +302,14 @@ Private Function CleanStockCode(ByVal code As String) As String
     CleanStockCode = result
 End Function
 
+Private Sub Delay(seconds As Double)
+    Dim endTime As Double
+    endTime = Timer + seconds
+    Do While Timer < endTime
+        DoEvents
+    Loop
+End Sub
+
 Private Sub ApplyPriceColor(ws As Worksheet, rowNum As Long, priceChange As String)
     Dim changeVal As Double
 
@@ -334,7 +331,6 @@ End Sub
 ' =====================================================
 Sub TestSingleStock()
     Dim code As String
-    Dim market As String
     Dim price As String
     Dim change As String
     Dim pct As String
@@ -342,35 +338,32 @@ Sub TestSingleStock()
     code = InputBox("종목코드 (예: 005930):", "테스트", "005930")
     If code = "" Then Exit Sub
 
-    market = InputBox("시장 (KS=코스피, KQ=코스닥):", "시장", "KS")
-    If market = "" Then market = "KS"
-
     code = CleanStockCode(code)
-    Call GetStockPriceMac(code, market, price, change, pct)
+    Call GetNaverStockPrice(code, price, change, pct)
 
-    MsgBox "종목: " & code & "." & market & vbCrLf & _
+    MsgBox "종목코드: " & code & vbCrLf & _
            "현재가: " & price & vbCrLf & _
            "전일대비: " & change & vbCrLf & _
            "등락률: " & pct, vbInformation, "결과"
 End Sub
 
-' curl 테스트
-Sub TestCurl()
-    Dim result As String
+' 인터넷 연결 테스트
+Sub TestConnection()
+    Dim http As Object
 
-    On Error GoTo CurlTestError
+    On Error GoTo ConnError
 
-    result = ExecuteCurl("https://www.google.com")
+    Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+    http.Open "GET", "https://www.naver.com", False
+    http.SetTimeouts 5000, 5000, 10000, 10000
+    http.send
 
-    If Len(result) > 0 Then
-        MsgBox "curl 연결 성공!" & vbCrLf & "응답 길이: " & Len(result), vbInformation
-    Else
-        MsgBox "curl 응답 없음", vbExclamation
-    End If
+    MsgBox "연결 성공! HTTP 상태: " & http.Status, vbInformation
+    Set http = Nothing
     Exit Sub
 
-CurlTestError:
-    MsgBox "curl 실패: " & Err.Description, vbCritical
+ConnError:
+    MsgBox "연결 실패: " & Err.Description, vbCritical
 End Sub
 
 ' =====================================================
