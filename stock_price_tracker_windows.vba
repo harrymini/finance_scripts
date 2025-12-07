@@ -79,8 +79,11 @@ Sub UpdateStockPrices()
 
             wsToday.Cells(rowNum, 1).Value = stockName
             wsToday.Cells(rowNum, 2).Value = "'" & stockCode
+            wsToday.Cells(rowNum, 3).NumberFormat = "@"
             wsToday.Cells(rowNum, 3).Value = currentPrice
+            wsToday.Cells(rowNum, 4).NumberFormat = "@"
             wsToday.Cells(rowNum, 4).Value = priceChange
+            wsToday.Cells(rowNum, 5).NumberFormat = "@"
             wsToday.Cells(rowNum, 5).Value = changePercent
             wsToday.Cells(rowNum, 6).Value = Format(Now, "hh:mm:ss")
 
