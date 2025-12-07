@@ -1,5 +1,5 @@
 ' =====================================================
-' 주식 현재가 추적 VBA 스크립트 v2
+' 주식 현재가 추적 VBA 스크립트 v3
 '
 ' 사용법:
 ' 1. 엑셀에서 Alt + F11로 VBA 편집기 열기
@@ -34,7 +34,7 @@ Sub UpdateStockPrices()
 
     On Error GoTo ErrorHandler
 
-    ' 오늘 날짜로 시트 이름 생성 (예: 2025-12-07)
+    ' 오늘 날짜로 시트 이름 생성
     todayName = Format(Date, "yyyy-mm-dd")
 
     ' 데이터 시트 확인
@@ -55,12 +55,11 @@ Sub UpdateStockPrices()
     ' 헤더 설정
     SetupHeader wsToday
 
-    ' 데이터 시트의 마지막 행 찾기 (A열 기준)
+    ' 데이터 시트의 마지막 행 찾기
     lastRow = wsData.Cells(wsData.Rows.count, "A").End(xlUp).Row
 
     If lastRow < 2 Then
-        MsgBox "데이터 시트에 종목 데이터가 없습니다." & vbCrLf & _
-               "2행부터 데이터를 입력해주세요.", vbExclamation, "오류"
+        MsgBox "데이터 시트에 종목 데이터가 없습니다.", vbExclamation, "오류"
         Exit Sub
     End If
 
@@ -69,70 +68,58 @@ Sub UpdateStockPrices()
     Application.StatusBar = "주식 현재가 업데이트 중..."
 
     processedCount = 0
-    rowNum = 2  ' 결과 시트의 시작 행
+    rowNum = 2
 
-    ' 2행부터 데이터 읽기 (1행은 헤더)
+    ' 2행부터 데이터 읽기
     For i = 2 To lastRow
         stockName = Trim(CStr(wsData.Cells(i, 1).Value))
         stockCode = Trim(CStr(wsData.Cells(i, 2).Value))
 
-        ' 빈 행 건너뛰기
         If stockName = "" And stockCode = "" Then
             GoTo NextRow
         End If
 
         If stockCode <> "" Then
-            ' 상태 업데이트
             Application.StatusBar = "처리 중: " & stockName & " (" & processedCount + 1 & "/" & (lastRow - 1) & ")"
             DoEvents
 
-            ' 종목코드 정리 (숫자 6자리)
+            ' 종목코드 정리
             stockCode = CleanStockCode(stockCode)
 
-            ' 현재가 가져오기
-            Call GetStockPrice(stockCode, currentPrice, priceChange, changePercent)
+            ' 현재가 가져오기 (새 API 사용)
+            Call GetStockPriceNew(stockCode, currentPrice, priceChange, changePercent)
 
             ' 결과 기록
             wsToday.Cells(rowNum, 1).Value = stockName
-            wsToday.Cells(rowNum, 2).Value = "'" & stockCode  ' 텍스트로 저장
+            wsToday.Cells(rowNum, 2).Value = "'" & stockCode
             wsToday.Cells(rowNum, 3).Value = currentPrice
             wsToday.Cells(rowNum, 4).Value = priceChange
             wsToday.Cells(rowNum, 5).Value = changePercent
             wsToday.Cells(rowNum, 6).Value = Format(Now, "hh:mm:ss")
 
-            ' 색상 적용 (상승/하락)
+            ' 색상 적용
             ApplyPriceColor wsToday, rowNum, priceChange
 
             rowNum = rowNum + 1
             processedCount = processedCount + 1
 
-            ' 서버 부하 방지 딜레이 (0.5초)
-            Delay 0.5
+            ' 딜레이
+            Delay 0.3
         End If
 
 NextRow:
     Next i
 
-    ' 열 너비 자동 조정
     wsToday.Columns("A:F").AutoFit
 
-    ' 숫자 형식 적용
-    If rowNum > 2 Then
-        wsToday.Range("C2:C" & rowNum - 1).NumberFormat = "#,##0"
-    End If
-
-    ' 정리
     Application.StatusBar = False
     Application.ScreenUpdating = True
 
-    ' 완료 메시지
     MsgBox "주식 현재가 업데이트 완료!" & vbCrLf & vbCrLf & _
            "처리된 종목: " & processedCount & "개" & vbCrLf & _
            "시트: " & todayName, vbInformation, "완료"
 
-    ' 오늘 시트로 이동
     wsToday.Activate
-
     Exit Sub
 
 ErrorHandler:
@@ -143,10 +130,142 @@ ErrorHandler:
 End Sub
 
 ' =====================================================
+' 주가 데이터 가져오기 (네이버 모바일 API - JSON)
+' =====================================================
+Private Sub GetStockPriceNew(stockCode As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
+    Dim http As Object
+    Dim url As String
+    Dim response As String
+    Dim json As String
+
+    On Error GoTo PriceError
+
+    price = "-"
+    change = "-"
+    changePercent = "-"
+
+    ' 네이버 모바일 주식 API (JSON 반환)
+    url = "https://m.stock.naver.com/api/stock/" & stockCode & "/basic"
+
+    Set http = CreateObject("MSXML2.XMLHTTP")
+    http.Open "GET", url, False
+    http.setRequestHeader "User-Agent", "Mozilla/5.0"
+    http.send
+
+    If http.Status = 200 Then
+        json = http.responseText
+
+        ' JSON에서 값 추출
+        price = ExtractJsonValue(json, "closePrice")
+        If price = "" Then price = ExtractJsonValue(json, "currentPrice")
+
+        change = ExtractJsonValue(json, "compareToPreviousClosePrice")
+        changePercent = ExtractJsonValue(json, "fluctuationsRatio")
+
+        ' 포맷팅
+        If price <> "" And price <> "-" Then
+            price = Format(Val(Replace(price, ",", "")), "#,##0")
+        End If
+
+        If change <> "" And change <> "-" Then
+            Dim changeVal As Double
+            changeVal = Val(Replace(change, ",", ""))
+            If changeVal > 0 Then
+                change = "+" & Format(changeVal, "#,##0")
+            ElseIf changeVal < 0 Then
+                change = Format(changeVal, "#,##0")
+            Else
+                change = "0"
+            End If
+        End If
+
+        If changePercent <> "" And changePercent <> "-" Then
+            Dim pctVal As Double
+            pctVal = Val(changePercent)
+            If pctVal > 0 Then
+                changePercent = "+" & Format(pctVal, "0.00") & "%"
+            ElseIf pctVal < 0 Then
+                changePercent = Format(pctVal, "0.00") & "%"
+            Else
+                changePercent = "0.00%"
+            End If
+        End If
+    End If
+
+    Set http = Nothing
+    Exit Sub
+
+PriceError:
+    price = "오류"
+    change = "-"
+    changePercent = "-"
+    If Not http Is Nothing Then Set http = Nothing
+End Sub
+
+' JSON에서 특정 키의 값 추출 (간단한 파서)
+Private Function ExtractJsonValue(json As String, key As String) As String
+    Dim searchKey As String
+    Dim startPos As Long
+    Dim endPos As Long
+    Dim value As String
+
+    On Error GoTo ExtractError
+
+    ' "key": 또는 "key":로 검색
+    searchKey = """" & key & """:"
+
+    startPos = InStr(1, json, searchKey, vbTextCompare)
+    If startPos = 0 Then
+        ExtractJsonValue = ""
+        Exit Function
+    End If
+
+    startPos = startPos + Len(searchKey)
+
+    ' 공백 건너뛰기
+    Do While Mid(json, startPos, 1) = " "
+        startPos = startPos + 1
+    Loop
+
+    ' 값 타입 확인
+    If Mid(json, startPos, 1) = """" Then
+        ' 문자열 값
+        startPos = startPos + 1
+        endPos = InStr(startPos, json, """", vbTextCompare)
+    ElseIf Mid(json, startPos, 1) = "n" Then
+        ' null
+        ExtractJsonValue = ""
+        Exit Function
+    Else
+        ' 숫자 값
+        endPos = startPos
+        Do While endPos <= Len(json)
+            Dim c As String
+            c = Mid(json, endPos, 1)
+            If c = "," Or c = "}" Or c = "]" Or c = " " Or c = vbCr Or c = vbLf Then
+                Exit Do
+            End If
+            endPos = endPos + 1
+        Loop
+    End If
+
+    If endPos > startPos Then
+        value = Mid(json, startPos, endPos - startPos)
+        ExtractJsonValue = Trim(value)
+    Else
+        ExtractJsonValue = ""
+    End If
+
+    Exit Function
+
+ExtractError:
+    ExtractJsonValue = ""
+End Function
+
+' =====================================================
 ' 시트 관리 함수들
 ' =====================================================
 
-' 시트 가져오기 또는 생성
 Private Function GetOrCreateSheet(sheetName As String) As Worksheet
     Dim ws As Worksheet
     Dim lastRow As Long
@@ -156,22 +275,19 @@ Private Function GetOrCreateSheet(sheetName As String) As Worksheet
     On Error GoTo 0
 
     If ws Is Nothing Then
-        ' 새 시트 생성
         Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.count))
         ws.Name = sheetName
     Else
-        ' 기존 시트 데이터 영역만 초기화 (헤더 제외)
         lastRow = ws.Cells(ws.Rows.count, "A").End(xlUp).Row
         If lastRow > 1 Then
             ws.Range("A2:F" & lastRow).ClearContents
-            ws.Range("A2:F" & lastRow).Font.Color = RGB(0, 0, 0)  ' 색상 초기화
+            ws.Range("A2:F" & lastRow).Font.Color = RGB(0, 0, 0)
         End If
     End If
 
     Set GetOrCreateSheet = ws
 End Function
 
-' 헤더 설정
 Private Sub SetupHeader(ws As Worksheet)
     ws.Cells(1, 1).Value = "종목명"
     ws.Cells(1, 2).Value = "종목코드"
@@ -192,7 +308,6 @@ End Sub
 ' 유틸리티 함수들
 ' =====================================================
 
-' 종목코드 정리 (숫자 6자리로)
 Private Function CleanStockCode(ByVal code As String) As String
     Dim result As String
     Dim i As Long
@@ -208,7 +323,6 @@ Private Function CleanStockCode(ByVal code As String) As String
         End If
     Next i
 
-    ' 6자리로 패딩
     Do While Len(result) < 6
         result = "0" & result
     Loop
@@ -216,7 +330,6 @@ Private Function CleanStockCode(ByVal code As String) As String
     CleanStockCode = result
 End Function
 
-' 딜레이 함수 (초 단위)
 Private Sub Delay(seconds As Double)
     Dim endTime As Double
     endTime = Timer + seconds
@@ -225,7 +338,6 @@ Private Sub Delay(seconds As Double)
     Loop
 End Sub
 
-' 가격 색상 적용
 Private Sub ApplyPriceColor(ws As Worksheet, rowNum As Long, priceChange As String)
     Dim changeVal As Double
 
@@ -234,206 +346,21 @@ Private Sub ApplyPriceColor(ws As Worksheet, rowNum As Long, priceChange As Stri
     On Error GoTo 0
 
     If changeVal > 0 Then
-        ws.Cells(rowNum, 4).Font.Color = RGB(255, 0, 0)  ' 빨간색 (상승)
+        ws.Cells(rowNum, 4).Font.Color = RGB(255, 0, 0)
         ws.Cells(rowNum, 5).Font.Color = RGB(255, 0, 0)
     ElseIf changeVal < 0 Then
-        ws.Cells(rowNum, 4).Font.Color = RGB(0, 0, 255)  ' 파란색 (하락)
+        ws.Cells(rowNum, 4).Font.Color = RGB(0, 0, 255)
         ws.Cells(rowNum, 5).Font.Color = RGB(0, 0, 255)
     End If
 End Sub
 
 ' =====================================================
-' 주가 데이터 가져오기
-' =====================================================
-
-' 네이버 금융에서 주식 현재가 가져오기
-Private Sub GetStockPrice(stockCode As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
-    Dim http As Object
-    Dim url As String
-    Dim response As String
-
-    On Error GoTo PriceError
-
-    ' 기본값 설정
-    price = "-"
-    change = "-"
-    changePercent = "-"
-
-    ' 네이버 금융 URL
-    url = "https://finance.naver.com/item/main.naver?code=" & stockCode
-
-    ' HTTP 요청
-    Set http = CreateObject("MSXML2.XMLHTTP")
-    http.Open "GET", url, False
-    http.setRequestHeader "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    http.send
-
-    If http.Status = 200 Then
-        response = http.responseText
-
-        ' 현재가 파싱
-        price = ParseCurrentPrice(response)
-        change = ParsePriceChange(response)
-        changePercent = ParseChangePercent(response)
-    End If
-
-    Set http = Nothing
-    Exit Sub
-
-PriceError:
-    price = "오류"
-    change = "-"
-    changePercent = "-"
-    If Not http Is Nothing Then Set http = Nothing
-End Sub
-
-' HTML에서 현재가 추출
-Private Function ParseCurrentPrice(html As String) As String
-    Dim startPos As Long
-    Dim endPos As Long
-    Dim tempStr As String
-
-    On Error GoTo ParseError
-
-    ' 현재가 찾기 - "no_today" 클래스 내의 blind 스팬
-    startPos = InStr(1, html, "no_today", vbTextCompare)
-    If startPos > 0 Then
-        startPos = InStr(startPos, html, "blind", vbTextCompare)
-        If startPos > 0 Then
-            startPos = InStr(startPos, html, ">", vbTextCompare)
-            If startPos > 0 Then
-                startPos = startPos + 1
-                endPos = InStr(startPos, html, "<", vbTextCompare)
-                If endPos > startPos Then
-                    tempStr = Mid(html, startPos, endPos - startPos)
-                    tempStr = Trim(Replace(tempStr, ",", ""))
-                    If IsNumeric(tempStr) Then
-                        ParseCurrentPrice = Format(Val(tempStr), "#,##0")
-                        Exit Function
-                    End If
-                End If
-            End If
-        End If
-    End If
-
-    ParseCurrentPrice = "-"
-    Exit Function
-
-ParseError:
-    ParseCurrentPrice = "-"
-End Function
-
-' HTML에서 전일대비 추출
-Private Function ParsePriceChange(html As String) As String
-    Dim startPos As Long
-    Dim endPos As Long
-    Dim tempStr As String
-    Dim isUp As Boolean
-    Dim isDown As Boolean
-
-    On Error GoTo ParseError
-
-    ' 상승/하락 여부 확인
-    isUp = InStr(1, html, "no_exday up", vbTextCompare) > 0
-    isDown = InStr(1, html, "no_exday down", vbTextCompare) > 0
-
-    ' 전일대비 찾기
-    startPos = InStr(1, html, "no_exday", vbTextCompare)
-    If startPos > 0 Then
-        startPos = InStr(startPos, html, "blind", vbTextCompare)
-        If startPos > 0 Then
-            startPos = InStr(startPos, html, ">", vbTextCompare)
-            If startPos > 0 Then
-                startPos = startPos + 1
-                endPos = InStr(startPos, html, "<", vbTextCompare)
-                If endPos > startPos Then
-                    tempStr = Mid(html, startPos, endPos - startPos)
-                    tempStr = Trim(Replace(tempStr, ",", ""))
-                    If IsNumeric(tempStr) Then
-                        If isUp Then
-                            ParsePriceChange = "+" & Format(Val(tempStr), "#,##0")
-                        ElseIf isDown Then
-                            ParsePriceChange = "-" & Format(Val(tempStr), "#,##0")
-                        Else
-                            ParsePriceChange = Format(Val(tempStr), "#,##0")
-                        End If
-                        Exit Function
-                    End If
-                End If
-            End If
-        End If
-    End If
-
-    ParsePriceChange = "0"
-    Exit Function
-
-ParseError:
-    ParsePriceChange = "-"
-End Function
-
-' HTML에서 등락률 추출
-Private Function ParseChangePercent(html As String) As String
-    Dim startPos As Long
-    Dim endPos As Long
-    Dim tempStr As String
-    Dim isUp As Boolean
-    Dim isDown As Boolean
-    Dim searchStart As Long
-
-    On Error GoTo ParseError
-
-    ' 상승/하락 여부 확인
-    isUp = InStr(1, html, "no_exday up", vbTextCompare) > 0
-    isDown = InStr(1, html, "no_exday down", vbTextCompare) > 0
-
-    ' 등락률 찾기 (두 번째 blind 스팬)
-    startPos = InStr(1, html, "no_exday", vbTextCompare)
-    If startPos > 0 Then
-        ' 첫 번째 blind 건너뛰기
-        searchStart = InStr(startPos, html, "blind", vbTextCompare)
-        If searchStart > 0 Then
-            searchStart = InStr(searchStart + 5, html, "blind", vbTextCompare)
-            If searchStart > 0 Then
-                startPos = InStr(searchStart, html, ">", vbTextCompare)
-                If startPos > 0 Then
-                    startPos = startPos + 1
-                    endPos = InStr(startPos, html, "<", vbTextCompare)
-                    If endPos > startPos Then
-                        tempStr = Mid(html, startPos, endPos - startPos)
-                        tempStr = Trim(Replace(tempStr, "%", ""))
-                        If IsNumeric(tempStr) Then
-                            If isUp Then
-                                ParseChangePercent = "+" & tempStr & "%"
-                            ElseIf isDown Then
-                                ParseChangePercent = "-" & tempStr & "%"
-                            Else
-                                ParseChangePercent = tempStr & "%"
-                            End If
-                            Exit Function
-                        End If
-                    End If
-                End If
-            End If
-        End If
-    End If
-
-    ParseChangePercent = "0%"
-    Exit Function
-
-ParseError:
-    ParseChangePercent = "-"
-End Function
-
-' =====================================================
 ' 유틸리티 매크로
 ' =====================================================
 
-' 특정 날짜 시트 삭제
 Sub DeleteDateSheet()
     Dim sheetName As String
-
-    sheetName = InputBox("삭제할 시트 이름 (날짜):", "시트 삭제", Format(Date, "yyyy-mm-dd"))
-
+    sheetName = InputBox("삭제할 시트 이름:", "시트 삭제", Format(Date, "yyyy-mm-dd"))
     If sheetName = "" Then Exit Sub
 
     On Error Resume Next
@@ -442,20 +369,18 @@ Sub DeleteDateSheet()
     Application.DisplayAlerts = True
 
     If Err.Number = 0 Then
-        MsgBox "시트 '" & sheetName & "' 삭제됨", vbInformation
+        MsgBox "삭제됨: " & sheetName, vbInformation
     Else
-        MsgBox "시트를 찾을 수 없습니다: " & sheetName, vbExclamation
+        MsgBox "시트를 찾을 수 없습니다", vbExclamation
     End If
     On Error GoTo 0
 End Sub
 
-' 모든 날짜 시트 삭제 (데이터 시트 제외)
 Sub ClearAllDateSheets()
     Dim ws As Worksheet
     Dim count As Long
 
-    If MsgBox("모든 날짜 시트를 삭제하시겠습니까?" & vbCrLf & _
-              "(데이터 시트는 유지됩니다)", vbYesNo + vbQuestion) = vbNo Then
+    If MsgBox("모든 날짜 시트를 삭제하시겠습니까?", vbYesNo + vbQuestion) = vbNo Then
         Exit Sub
     End If
 
@@ -463,24 +388,14 @@ Sub ClearAllDateSheets()
     count = 0
 
     For Each ws In ThisWorkbook.Worksheets
-        If ws.Name <> "데이터" And IsDateSheet(ws.Name) Then
-            ws.Delete
-            count = count + 1
+        If ws.Name <> "데이터" And Len(ws.Name) = 10 Then
+            If Mid(ws.Name, 5, 1) = "-" And Mid(ws.Name, 8, 1) = "-" Then
+                ws.Delete
+                count = count + 1
+            End If
         End If
     Next ws
 
     Application.DisplayAlerts = True
     MsgBox count & "개 시트 삭제됨", vbInformation
 End Sub
-
-' 날짜 형식 시트인지 확인
-Private Function IsDateSheet(sheetName As String) As Boolean
-    ' yyyy-mm-dd 형식 확인
-    If Len(sheetName) = 10 Then
-        If Mid(sheetName, 5, 1) = "-" And Mid(sheetName, 8, 1) = "-" Then
-            IsDateSheet = True
-            Exit Function
-        End If
-    End If
-    IsDateSheet = False
-End Function
