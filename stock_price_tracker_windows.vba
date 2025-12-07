@@ -408,43 +408,40 @@ Sub UpdateStockPricesByDate()
 
         rowNum = 2
 
-        ' 해당 날짜를 가진 모든 종목 조회
+        ' 모든 종목에 대해 해당 날짜 시세 조회
         For j = 2 To lastRow
-            ' 이 종목의 날짜가 현재 처리중인 날짜와 같은지 확인
-            rawDate = wsData.Cells(j, 3).Value
-            If rawDate <> "" Then
-                If ConvertToYYYYMMDD(rawDate) = targetDate Then
-                    stockName = Trim(CStr(wsData.Cells(j, 1).Value))
-                    stockCode = Trim(CStr(wsData.Cells(j, 2).Value))
+            stockName = Trim(CStr(wsData.Cells(j, 1).Value))
+            stockCode = Trim(CStr(wsData.Cells(j, 2).Value))
 
-                    If stockCode <> "" Then
-                        Application.StatusBar = targetDateFormatted & " - " & stockName
-                        DoEvents
+            If stockName = "" And stockCode = "" Then GoTo NextStock
+            If stockCode = "" Then GoTo NextStock
 
-                        stockCode = CleanStockCode(stockCode)
+            Application.StatusBar = targetDateFormatted & " - " & stockName
+            DoEvents
 
-                        ' 과거 시세 가져오기
-                        Call GetNaverHistoricalPrice(stockCode, targetDate, currentPrice, priceChange, changePercent)
+            stockCode = CleanStockCode(stockCode)
 
-                        wsResult.Cells(rowNum, 1).Value = stockName
-                        wsResult.Cells(rowNum, 2).Value = "'" & stockCode
-                        wsResult.Cells(rowNum, 3).NumberFormat = "@"
-                        wsResult.Cells(rowNum, 3).Value = currentPrice
-                        wsResult.Cells(rowNum, 4).NumberFormat = "@"
-                        wsResult.Cells(rowNum, 4).Value = priceChange
-                        wsResult.Cells(rowNum, 5).NumberFormat = "@"
-                        wsResult.Cells(rowNum, 5).Value = changePercent
-                        wsResult.Cells(rowNum, 6).Value = Format(Now, "yyyy-mm-dd hh:mm:ss")
+            ' 과거 시세 가져오기
+            Call GetNaverHistoricalPrice(stockCode, targetDate, currentPrice, priceChange, changePercent)
 
-                        ApplyPriceColorByDate wsResult, rowNum, priceChange
+            wsResult.Cells(rowNum, 1).Value = stockName
+            wsResult.Cells(rowNum, 2).Value = "'" & stockCode
+            wsResult.Cells(rowNum, 3).NumberFormat = "@"
+            wsResult.Cells(rowNum, 3).Value = currentPrice
+            wsResult.Cells(rowNum, 4).NumberFormat = "@"
+            wsResult.Cells(rowNum, 4).Value = priceChange
+            wsResult.Cells(rowNum, 5).NumberFormat = "@"
+            wsResult.Cells(rowNum, 5).Value = changePercent
+            wsResult.Cells(rowNum, 6).Value = Format(Now, "yyyy-mm-dd hh:mm:ss")
 
-                        rowNum = rowNum + 1
-                        totalProcessed = totalProcessed + 1
+            ApplyPriceColorByDate wsResult, rowNum, priceChange
 
-                        Delay 0.3
-                    End If
-                End If
-            End If
+            rowNum = rowNum + 1
+            totalProcessed = totalProcessed + 1
+
+            Delay 0.3
+
+NextStock:
         Next j
 
         wsResult.Columns("A:F").AutoFit
