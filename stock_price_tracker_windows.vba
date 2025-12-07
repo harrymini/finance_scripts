@@ -156,7 +156,10 @@ Private Sub GetNaverStockPrice(stockCode As String, ByRef price As String, ByRef
             price = curPrice  ' 이미 콤마 포함된 형식
 
             If Len(diffPrice) > 0 Then
-                If isUp Then
+                ' 이미 -가 포함되어 있으면 그대로 사용
+                If Left(diffPrice, 1) = "-" Then
+                    change = diffPrice
+                ElseIf isUp Then
                     change = "+" & diffPrice
                 Else
                     change = "-" & diffPrice
@@ -164,7 +167,10 @@ Private Sub GetNaverStockPrice(stockCode As String, ByRef price As String, ByRef
             End If
 
             If Len(pctVal) > 0 Then
-                If isUp Then
+                ' 이미 -가 포함되어 있으면 그대로 사용
+                If Left(pctVal, 1) = "-" Then
+                    changePercent = pctVal & "%"
+                ElseIf isUp Then
                     changePercent = "+" & pctVal & "%"
                 Else
                     changePercent = "-" & pctVal & "%"
