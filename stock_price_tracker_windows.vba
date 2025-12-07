@@ -115,16 +115,16 @@ ErrorHandler:
 End Sub
 
 ' =====================================================
-' 네이버 금융 API
+' 네이버 금융 API (JSON)
 ' =====================================================
 Private Sub GetNaverStockPrice(stockCode As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
     Dim http As Object
     Dim url As String
     Dim response As String
-    Dim curPrice As Double
-    Dim prevClose As Double
-    Dim diff As Double
-    Dim pct As Double
+    Dim curPrice As String
+    Dim diffPrice As String
+    Dim pctVal As String
+    Dim isUp As Boolean
 
     On Error GoTo NaverError
 
@@ -144,31 +144,31 @@ Private Sub GetNaverStockPrice(stockCode As String, ByRef price As String, ByRef
     If http.Status = 200 Then
         response = http.responseText
 
-        ' JSON에서 값 추출
-        curPrice = ExtractJsonNumber(response, "closePrice")
-        If curPrice = 0 Then curPrice = ExtractJsonNumber(response, "currentPrice")
+        ' JSON에서 문자열 값 추출 (콤마 포함)
+        curPrice = ExtractJsonString(response, "closePrice")
+        diffPrice = ExtractJsonString(response, "compareToPreviousClosePrice")
+        pctVal = ExtractJsonString(response, "fluctuationsRatio")
 
-        prevClose = ExtractJsonNumber(response, "compareToPreviousClosePrice")
-        pct = ExtractJsonNumber(response, "fluctuationsRatio")
+        ' 상승/하락 확인
+        isUp = InStr(1, response, """text"":""상승""", vbTextCompare) > 0
 
-        If curPrice > 0 Then
-            price = Format(curPrice, "#,##0")
+        If Len(curPrice) > 0 Then
+            price = curPrice  ' 이미 콤마 포함된 형식
 
-            diff = prevClose
-            If diff > 0 Then
-                change = "+" & Format(diff, "#,##0")
-            ElseIf diff < 0 Then
-                change = Format(diff, "#,##0")
-            Else
-                change = "0"
+            If Len(diffPrice) > 0 Then
+                If isUp Then
+                    change = "+" & diffPrice
+                Else
+                    change = "-" & diffPrice
+                End If
             End If
 
-            If pct > 0 Then
-                changePercent = "+" & Format(pct, "0.00") & "%"
-            ElseIf pct < 0 Then
-                changePercent = Format(pct, "0.00") & "%"
-            Else
-                changePercent = "0.00%"
+            If Len(pctVal) > 0 Then
+                If isUp Then
+                    changePercent = "+" & pctVal & "%"
+                Else
+                    changePercent = "-" & pctVal & "%"
+                End If
             End If
         End If
     End If
@@ -183,60 +183,39 @@ NaverError:
     If Not http Is Nothing Then Set http = Nothing
 End Sub
 
-' JSON에서 숫자 값 추출
-Private Function ExtractJsonNumber(json As String, key As String) As Double
+' JSON에서 문자열 값 추출 (따옴표 안의 값)
+Private Function ExtractJsonString(json As String, key As String) As String
     Dim searchKey As String
     Dim startPos As Long
+    Dim endPos As Long
     Dim value As String
-    Dim i As Long
-    Dim c As String
 
     On Error GoTo ExtractErr
 
-    searchKey = """" & key & """:"
+    searchKey = """" & key & """:"""
 
     startPos = InStr(1, json, searchKey, vbTextCompare)
     If startPos = 0 Then
-        ExtractJsonNumber = 0
+        ExtractJsonString = ""
         Exit Function
     End If
 
     startPos = startPos + Len(searchKey)
 
-    ' 공백과 따옴표 건너뛰기
-    Do While startPos <= Len(json)
-        c = Mid(json, startPos, 1)
-        If c <> " " And c <> """" Then Exit Do
-        startPos = startPos + 1
-    Loop
-
-    ' null 체크
-    If Mid(json, startPos, 4) = "null" Then
-        ExtractJsonNumber = 0
+    ' 닫는 따옴표 찾기
+    endPos = InStr(startPos, json, """", vbTextCompare)
+    If endPos = 0 Then
+        ExtractJsonString = ""
         Exit Function
     End If
 
-    ' 숫자 추출
-    value = ""
-    For i = startPos To Len(json)
-        c = Mid(json, i, 1)
-        If (c >= "0" And c <= "9") Or c = "." Or c = "-" Then
-            value = value & c
-        ElseIf Len(value) > 0 Then
-            Exit For
-        End If
-    Next i
-
-    If Len(value) > 0 Then
-        ExtractJsonNumber = Val(value)
-    Else
-        ExtractJsonNumber = 0
-    End If
+    value = Mid(json, startPos, endPos - startPos)
+    ExtractJsonString = value
 
     Exit Function
 
 ExtractErr:
-    ExtractJsonNumber = 0
+    ExtractJsonString = ""
 End Function
 
 ' =====================================================
