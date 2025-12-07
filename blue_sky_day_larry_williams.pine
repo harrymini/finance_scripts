@@ -1,0 +1,252 @@
+// ============================================================================
+// Pine Script® 라이선스: Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// ============================================================================
+//
+// 【전략 설명】
+// Larry Williams의 원조 Blue Sky Day 전략
+// "푸른 하늘처럼 위로 저항이 없다" - 신고가 돌파 모멘텀 전략
+//
+// 【핵심 개념】
+// Blue Sky Day란 주가가 전일 고가를 돌파하며 강한 상승 모멘텀을 보이는 날을 의미합니다.
+// 신고가 영역에서는 매도 저항이 없어 추가 상승 가능성이 높다는 논리입니다.
+//
+// 【진입 조건】
+// 1. 당일 종가 > 전일 고가 (상방 돌파)
+// 2. 강한 양봉: 종가가 당일 고가의 일정 비율 이상 (선택적)
+// 3. 거래량 증가: 평균 거래량 대비 증가 (선택적)
+//
+// 【청산 조건】
+// - N일 후 청산 (기본: 5일)
+// - 또는 손절/익절 목표 도달 시
+//
+// 【참고】
+// - Larry Williams의 저서 "Long-Term Secrets to Short-Term Trading" 참조
+// - 단기 트레이딩에 적합한 모멘텀 전략
+//
+// ============================================================================
+
+//@version=6
+indicator("Larry Williams Blue Sky Day", shorttitle="Blue Sky Day", overlay=true, max_labels_count=500)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 1 - 입력 파라미터】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 기본 설정
+grp_basic = "기본 설정"
+candleStrengthFilter = input.bool(true, "강한 양봉 필터 사용", group=grp_basic, tooltip="종가가 당일 고가 근처에서 마감하는 강한 양봉만 필터링")
+candleStrengthPercent = input.float(70.0, "양봉 강도 (%)", minval=50.0, maxval=100.0, step=5.0, group=grp_basic, tooltip="종가가 당일 범위의 상위 N% 이내")
+
+// 거래량 필터
+grp_volume = "거래량 필터"
+useVolumeFilter = input.bool(false, "거래량 필터 사용", group=grp_volume)
+volumeMaPeriod = input.int(20, "거래량 MA 기간", minval=5, maxval=50, group=grp_volume)
+volumeMultiplier = input.float(1.5, "거래량 배수", minval=1.0, maxval=5.0, step=0.1, group=grp_volume, tooltip="평균 거래량 대비 이 배수 이상일 때만 신호")
+
+// 청산 설정
+grp_exit = "청산 설정"
+holdingDays = input.int(5, "보유 기간 (일)", minval=1, maxval=20, group=grp_exit, tooltip="Blue Sky Day 발생 후 몇 봉 동안 보유")
+useStopLoss = input.bool(true, "손절 사용", group=grp_exit)
+stopLossPercent = input.float(3.0, "손절 (%)", minval=0.5, maxval=10.0, step=0.5, group=grp_exit)
+useTakeProfit = input.bool(true, "익절 사용", group=grp_exit)
+takeProfitPercent = input.float(5.0, "익절 (%)", minval=1.0, maxval=20.0, step=0.5, group=grp_exit)
+
+// 숏 전략 (Blue Sky Day 반대 - 하락 돌파)
+grp_short = "숏 전략 (Red Sky Day)"
+enableShort = input.bool(true, "숏 신호 활성화", group=grp_short, tooltip="종가가 전일 저가 아래로 돌파 시 숏 신호")
+
+// 시각화 설정
+grp_visual = "시각화"
+showLabels = input.bool(true, "신호 라벨 표시", group=grp_visual)
+showPrevHighLow = input.bool(true, "전일 고/저가 라인 표시", group=grp_visual)
+showExitLabels = input.bool(true, "청산 신호 표시", group=grp_visual)
+
+// 알림 설정
+grp_alert = "알림"
+enableAlerts = input.bool(true, "알림 활성화", group=grp_alert)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 2 - 핵심 계산】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 전일 고가/저가
+prevHigh = high[1]
+prevLow = low[1]
+
+// 당일 범위 및 종가 위치
+dayRange = high - low
+closePosition = dayRange > 0 ? (close - low) / dayRange * 100 : 50  // 0-100%
+
+// 거래량 MA
+volumeMa = ta.sma(volume, volumeMaPeriod)
+isHighVolume = volume > volumeMa * volumeMultiplier
+
+// === Blue Sky Day 조건 (롱) ===
+// 1. 종가가 전일 고가를 돌파
+breakoutAbove = close > prevHigh
+
+// 2. 강한 양봉 필터 (선택적)
+isStrongBullish = not candleStrengthFilter or closePosition >= candleStrengthPercent
+
+// 3. 거래량 필터 (선택적)
+volumeCondition = not useVolumeFilter or isHighVolume
+
+// Blue Sky Day 최종 신호
+blueSkyDay = breakoutAbove and isStrongBullish and volumeCondition and barstate.isconfirmed
+
+// === Red Sky Day 조건 (숏) ===
+// 종가가 전일 저가를 하향 돌파
+breakoutBelow = close < prevLow
+
+// 강한 음봉 필터
+isStrongBearish = not candleStrengthFilter or closePosition <= (100 - candleStrengthPercent)
+
+// Red Sky Day 최종 신호
+redSkyDay = enableShort and breakoutBelow and isStrongBearish and volumeCondition and barstate.isconfirmed
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 3 - 포지션 추적】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 포지션 상태 추적
+var bool inLongPosition = false
+var bool inShortPosition = false
+var float entryPrice = na
+var int entryBar = na
+var int positionType = 0  // 0: 없음, 1: 롱, -1: 숏
+
+// 청산 조건 계산
+barsHeld = bar_index - entryBar
+stopLossHit = positionType == 1 ? close < entryPrice * (1 - stopLossPercent / 100) :
+              positionType == -1 ? close > entryPrice * (1 + stopLossPercent / 100) : false
+takeProfitHit = positionType == 1 ? close > entryPrice * (1 + takeProfitPercent / 100) :
+                positionType == -1 ? close < entryPrice * (1 - takeProfitPercent / 100) : false
+timeExit = barsHeld >= holdingDays
+
+// 청산 신호
+exitLong = inLongPosition and barstate.isconfirmed and (timeExit or (useStopLoss and stopLossHit) or (useTakeProfit and takeProfitHit))
+exitShort = inShortPosition and barstate.isconfirmed and (timeExit or (useStopLoss and stopLossHit) or (useTakeProfit and takeProfitHit))
+
+// 포지션 업데이트
+if blueSkyDay and not inLongPosition and not inShortPosition
+    inLongPosition := true
+    positionType := 1
+    entryPrice := close
+    entryBar := bar_index
+
+if redSkyDay and not inLongPosition and not inShortPosition
+    inShortPosition := true
+    positionType := -1
+    entryPrice := close
+    entryBar := bar_index
+
+if exitLong
+    inLongPosition := false
+    positionType := 0
+    entryPrice := na
+    entryBar := na
+
+if exitShort
+    inShortPosition := false
+    positionType := 0
+    entryPrice := na
+    entryBar := na
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 4 - 시각화】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 전일 고/저가 라인
+plot(showPrevHighLow ? prevHigh : na, "전일 고가", color=color.new(color.green, 70), style=plot.style_stepline, linewidth=1)
+plot(showPrevHighLow ? prevLow : na, "전일 저가", color=color.new(color.red, 70), style=plot.style_stepline, linewidth=1)
+
+// Blue Sky Day 신호 라벨
+if showLabels and blueSkyDay
+    label.new(bar_index, low, "🚀\nBlue Sky",
+              style=label.style_label_up,
+              color=color.new(color.blue, 20),
+              textcolor=color.white,
+              size=size.small)
+
+// Red Sky Day 신호 라벨
+if showLabels and redSkyDay
+    label.new(bar_index, high, "Red Sky\n🔻",
+              style=label.style_label_down,
+              color=color.new(color.red, 20),
+              textcolor=color.white,
+              size=size.small)
+
+// 청산 라벨
+if showExitLabels and exitLong
+    exitReason = stopLossHit ? "SL" : takeProfitHit ? "TP" : "TIME"
+    label.new(bar_index, high, "Exit\n" + exitReason,
+              style=label.style_label_down,
+              color=color.new(color.gray, 30),
+              textcolor=color.white,
+              size=size.tiny)
+
+if showExitLabels and exitShort
+    exitReason = stopLossHit ? "SL" : takeProfitHit ? "TP" : "TIME"
+    label.new(bar_index, low, "Exit\n" + exitReason,
+              style=label.style_label_up,
+              color=color.new(color.gray, 30),
+              textcolor=color.white,
+              size=size.tiny)
+
+// 배경색
+bgcolor(blueSkyDay ? color.new(color.blue, 90) : na, title="Blue Sky Day 배경")
+bgcolor(redSkyDay ? color.new(color.red, 90) : na, title="Red Sky Day 배경")
+
+// 포지션 진행 중 표시
+bgcolor(inLongPosition ? color.new(color.green, 95) : na, title="롱 포지션 배경")
+bgcolor(inShortPosition ? color.new(color.red, 95) : na, title="숏 포지션 배경")
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 5 - 알림】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// Alert conditions
+alertcondition(blueSkyDay, title="Blue Sky Day 롱", message="🚀 {{ticker}} | Blue Sky Day 발생! 종가({{close}})가 전일 고가 돌파")
+alertcondition(redSkyDay, title="Red Sky Day 숏", message="🔻 {{ticker}} | Red Sky Day 발생! 종가({{close}})가 전일 저가 하향 돌파")
+alertcondition(exitLong, title="롱 청산", message="📤 {{ticker}} | 롱 포지션 청산")
+alertcondition(exitShort, title="숏 청산", message="📤 {{ticker}} | 숏 포지션 청산")
+
+// 통합 알림
+if enableAlerts and blueSkyDay
+    alert(str.format("🚀 {0} | Blue Sky Day! | 종가: {1} > 전일고가: {2}", syminfo.ticker, str.tostring(close, format.mintick), str.tostring(prevHigh, format.mintick)), alert.freq_once_per_bar_close)
+
+if enableAlerts and redSkyDay
+    alert(str.format("🔻 {0} | Red Sky Day! | 종가: {1} < 전일저가: {2}", syminfo.ticker, str.tostring(close, format.mintick), str.tostring(prevLow, format.mintick)), alert.freq_once_per_bar_close)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 6 - 정보 테이블】
+////////////////////////////////////////////////////////////////////////////////////////
+
+var table infoTable = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Blue Sky Day", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 0, "Larry Williams", text_color=color.blue, text_size=size.small)
+
+    table.cell(infoTable, 0, 1, "전일 고가", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 1, str.tostring(prevHigh, format.mintick), text_color=color.green, text_size=size.tiny)
+
+    table.cell(infoTable, 0, 2, "전일 저가", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 2, str.tostring(prevLow, format.mintick), text_color=color.red, text_size=size.tiny)
+
+    table.cell(infoTable, 0, 3, "현재 종가", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 3, str.tostring(close, format.mintick), text_color=color.white, text_size=size.tiny)
+
+    table.cell(infoTable, 0, 4, "양봉 강도", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 4, str.tostring(closePosition, "#.#") + "%", text_color=closePosition >= 70 ? color.green : color.orange, text_size=size.tiny)
+
+    positionStatus = inLongPosition ? "🟢 롱" : inShortPosition ? "🔴 숏" : "⚪ 없음"
+    table.cell(infoTable, 0, 5, "포지션", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 5, positionStatus, text_color=color.white, text_size=size.tiny)
