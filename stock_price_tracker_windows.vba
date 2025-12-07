@@ -1,6 +1,6 @@
 ' =====================================================
 ' 주식 현재가 추적 VBA 스크립트 (Windows용 - 네이버 금융)
-' 버전: 2.0
+' 버전: 2.1
 ' 최종 수정: 2025-12-07
 '
 ' 사용법:
@@ -11,12 +11,13 @@
 '    또는 UpdateStockPricesByDate 실행 (과거 날짜별 조회)
 '
 ' 데이터 시트 구조:
-' 1행: 헤더 (종목명, 종목코드, [날짜1, 날짜2, ...])
-' 2행부터: 데이터 (A열: 종목명, B열: 종목코드)
-' C열부터: 조회할 날짜들 (yyyy-mm-dd 형식, UpdateStockPricesByDate용)
+' 1행: 헤더 (종목명, 종목코드, 조회날짜)
+' 2행부터: 데이터 (A열: 종목명, B열: 종목코드, C열: 조회날짜)
+' C열의 고유 날짜별로 탭이 생성됨 (UpdateStockPricesByDate용)
 '
 ' 변경 이력:
-' v2.0 - 과거 날짜별 시세 조회 기능 추가 (C열 날짜 배열 → 각 날짜별 탭 생성)
+' v2.1 - C열 날짜를 세로로 읽어 고유 날짜별 탭 생성, 전일대비/등락률 계산 수정
+' v2.0 - 과거 날짜별 시세 조회 기능 추가
 ' v1.0 - 현재가 조회 기능
 ' =====================================================
 
@@ -323,17 +324,16 @@ Private Sub ApplyPriceColor(ws As Worksheet, rowNum As Long, priceChange As Stri
 End Sub
 
 ' =====================================================
-' 과거 날짜별 시세 조회 (C열 날짜 배열 → 각 날짜별 탭 생성)
-' 데이터 시트: A열=종목명, B열=종목코드, C열~=조회날짜 배열
-' C1, D1, E1... 에 날짜를 입력하면 각 날짜별로 탭 생성
+' 과거 날짜별 시세 조회 (C열 날짜 → 고유 날짜별 탭 생성)
+' 데이터 시트: A열=종목명, B열=종목코드, C열=조회날짜
+' C열의 고유 날짜마다 탭을 생성하고 해당 날짜의 모든 종목 시세 조회
 ' =====================================================
 Sub UpdateStockPricesByDate()
     Dim wsData As Worksheet
     Dim wsResult As Worksheet
     Dim lastRow As Long
-    Dim lastCol As Long
-    Dim col As Long
     Dim i As Long
+    Dim j As Long
     Dim rowNum As Long
     Dim stockName As String
     Dim stockCode As String
@@ -342,11 +342,10 @@ Sub UpdateStockPricesByDate()
     Dim currentPrice As String
     Dim priceChange As String
     Dim changePercent As String
-    Dim dateCount As Long
-    Dim stockCount As Long
     Dim totalProcessed As Long
-    Dim dates() As String
-    Dim dateIdx As Long
+    Dim uniqueDates As Object
+    Dim dateKey As Variant
+    Dim rawDate As Variant
 
     On Error GoTo ErrorHandler
 
@@ -366,40 +365,26 @@ Sub UpdateStockPricesByDate()
         Exit Sub
     End If
 
-    ' 날짜 배열 확인 (C열부터 1행)
-    lastCol = wsData.Cells(1, wsData.Columns.count).End(xlToLeft).Column
-    If lastCol < 3 Then
-        MsgBox "C열부터 조회할 날짜를 입력해주세요." & vbCrLf & _
-               "(예: C1=2024-12-01, D1=2024-12-02, ...)", vbExclamation, "오류"
-        Exit Sub
-    End If
+    ' C열에서 고유 날짜 수집 (Dictionary 사용)
+    Set uniqueDates = CreateObject("Scripting.Dictionary")
 
-    ' 날짜 배열 수집
-    dateCount = 0
-    ReDim dates(1 To lastCol - 2)
-
-    For col = 3 To lastCol
-        If wsData.Cells(1, col).Value <> "" Then
-            dateCount = dateCount + 1
-            If IsDate(wsData.Cells(1, col).Value) Then
-                dates(dateCount) = Format(wsData.Cells(1, col).Value, "yyyymmdd")
-            Else
-                dates(dateCount) = Trim(CStr(wsData.Cells(1, col).Value))
-                dates(dateCount) = Replace(dates(dateCount), "-", "")
-                dates(dateCount) = Replace(dates(dateCount), "/", "")
+    For i = 2 To lastRow
+        rawDate = wsData.Cells(i, 3).Value
+        If rawDate <> "" Then
+            targetDate = ConvertToYYYYMMDD(rawDate)
+            If Len(targetDate) = 8 And Not uniqueDates.exists(targetDate) Then
+                uniqueDates.Add targetDate, targetDate
             End If
         End If
-    Next col
+    Next i
 
-    If dateCount = 0 Then
-        MsgBox "조회할 날짜가 없습니다.", vbExclamation, "오류"
+    If uniqueDates.count = 0 Then
+        MsgBox "C열에 조회할 날짜가 없습니다.", vbExclamation, "오류"
         Exit Sub
     End If
 
-    stockCount = lastRow - 1
-
-    If MsgBox("총 " & dateCount & "개 날짜, " & stockCount & "개 종목을 조회합니다." & vbCrLf & _
-              "각 날짜별로 새 탭이 생성됩니다." & vbCrLf & vbCrLf & _
+    If MsgBox("총 " & uniqueDates.count & "개 날짜를 조회합니다." & vbCrLf & _
+              "각 날짜별로 탭이 생성됩니다." & vbCrLf & vbCrLf & _
               "계속하시겠습니까?", vbYesNo + vbQuestion, "확인") = vbNo Then
         Exit Sub
     End If
@@ -407,16 +392,14 @@ Sub UpdateStockPricesByDate()
     Application.ScreenUpdating = False
     totalProcessed = 0
 
-    ' 각 날짜별로 탭 생성 및 데이터 조회
-    For dateIdx = 1 To dateCount
-        targetDate = dates(dateIdx)
-
-        If Len(targetDate) <> 8 Then GoTo NextDate
+    ' 각 고유 날짜별로 탭 생성 및 데이터 조회
+    For Each dateKey In uniqueDates.Keys
+        targetDate = CStr(dateKey)
 
         ' 탭 이름은 yyyy-mm-dd 형식
         targetDateFormatted = Left(targetDate, 4) & "-" & Mid(targetDate, 5, 2) & "-" & Right(targetDate, 2)
 
-        Application.StatusBar = "탭 생성 중: " & targetDateFormatted & " (" & dateIdx & "/" & dateCount & ")"
+        Application.StatusBar = "탭 생성 중: " & targetDateFormatted
         DoEvents
 
         ' 해당 날짜 탭 생성/가져오기
@@ -425,52 +408,53 @@ Sub UpdateStockPricesByDate()
 
         rowNum = 2
 
-        ' 모든 종목에 대해 해당 날짜 시세 조회
-        For i = 2 To lastRow
-            stockName = Trim(CStr(wsData.Cells(i, 1).Value))
-            stockCode = Trim(CStr(wsData.Cells(i, 2).Value))
+        ' 해당 날짜를 가진 모든 종목 조회
+        For j = 2 To lastRow
+            ' 이 종목의 날짜가 현재 처리중인 날짜와 같은지 확인
+            rawDate = wsData.Cells(j, 3).Value
+            If rawDate <> "" Then
+                If ConvertToYYYYMMDD(rawDate) = targetDate Then
+                    stockName = Trim(CStr(wsData.Cells(j, 1).Value))
+                    stockCode = Trim(CStr(wsData.Cells(j, 2).Value))
 
-            If stockName = "" And stockCode = "" Then GoTo NextStock
-            If stockCode = "" Then GoTo NextStock
+                    If stockCode <> "" Then
+                        Application.StatusBar = targetDateFormatted & " - " & stockName
+                        DoEvents
 
-            Application.StatusBar = targetDateFormatted & " - " & stockName & " (" & (i - 1) & "/" & stockCount & ")"
-            DoEvents
+                        stockCode = CleanStockCode(stockCode)
 
-            stockCode = CleanStockCode(stockCode)
+                        ' 과거 시세 가져오기
+                        Call GetNaverHistoricalPrice(stockCode, targetDate, currentPrice, priceChange, changePercent)
 
-            ' 과거 시세 가져오기
-            Call GetNaverHistoricalPrice(stockCode, targetDate, currentPrice, priceChange, changePercent)
+                        wsResult.Cells(rowNum, 1).Value = stockName
+                        wsResult.Cells(rowNum, 2).Value = "'" & stockCode
+                        wsResult.Cells(rowNum, 3).NumberFormat = "@"
+                        wsResult.Cells(rowNum, 3).Value = currentPrice
+                        wsResult.Cells(rowNum, 4).NumberFormat = "@"
+                        wsResult.Cells(rowNum, 4).Value = priceChange
+                        wsResult.Cells(rowNum, 5).NumberFormat = "@"
+                        wsResult.Cells(rowNum, 5).Value = changePercent
+                        wsResult.Cells(rowNum, 6).Value = Format(Now, "yyyy-mm-dd hh:mm:ss")
 
-            wsResult.Cells(rowNum, 1).Value = stockName
-            wsResult.Cells(rowNum, 2).Value = "'" & stockCode
-            wsResult.Cells(rowNum, 3).NumberFormat = "@"
-            wsResult.Cells(rowNum, 3).Value = currentPrice
-            wsResult.Cells(rowNum, 4).NumberFormat = "@"
-            wsResult.Cells(rowNum, 4).Value = priceChange
-            wsResult.Cells(rowNum, 5).NumberFormat = "@"
-            wsResult.Cells(rowNum, 5).Value = changePercent
-            wsResult.Cells(rowNum, 6).Value = Format(Now, "yyyy-mm-dd hh:mm:ss")
+                        ApplyPriceColorByDate wsResult, rowNum, priceChange
 
-            ApplyPriceColorByDate wsResult, rowNum, priceChange
+                        rowNum = rowNum + 1
+                        totalProcessed = totalProcessed + 1
 
-            rowNum = rowNum + 1
-            totalProcessed = totalProcessed + 1
-
-            Delay 0.3
-
-NextStock:
-        Next i
+                        Delay 0.3
+                    End If
+                End If
+            End If
+        Next j
 
         wsResult.Columns("A:F").AutoFit
-
-NextDate:
-    Next dateIdx
+    Next dateKey
 
     Application.StatusBar = False
     Application.ScreenUpdating = True
 
     MsgBox "완료!" & vbCrLf & _
-           "생성된 탭: " & dateCount & "개" & vbCrLf & _
+           "생성된 탭: " & uniqueDates.count & "개" & vbCrLf & _
            "처리된 데이터: " & totalProcessed & "건", vbInformation, "완료"
 
     Exit Sub
@@ -481,7 +465,52 @@ ErrorHandler:
     MsgBox "오류: " & Err.Description, vbCritical, "오류"
 End Sub
 
-' 과거 시세 가져오기 (네이버 일별 시세 API)
+' 날짜를 yyyymmdd 형식으로 변환
+Private Function ConvertToYYYYMMDD(rawDate As Variant) As String
+    Dim result As String
+    Dim dateParts() As String
+    Dim y As String, m As String, d As String
+
+    On Error GoTo ConvertErr
+
+    If IsDate(rawDate) Then
+        result = Format(CDate(rawDate), "yyyymmdd")
+    Else
+        result = Trim(CStr(rawDate))
+        result = Replace(result, " ", "")
+
+        ' yyyy-mm-dd 또는 yyyy/mm/dd 형식
+        If InStr(result, "-") > 0 Then
+            dateParts = Split(result, "-")
+        ElseIf InStr(result, "/") > 0 Then
+            dateParts = Split(result, "/")
+        Else
+            ' 이미 yyyymmdd 형식
+            ConvertToYYYYMMDD = result
+            Exit Function
+        End If
+
+        If UBound(dateParts) >= 2 Then
+            y = dateParts(0)
+            m = dateParts(1)
+            d = dateParts(2)
+
+            ' 월, 일이 한 자리면 0 추가
+            If Len(m) = 1 Then m = "0" & m
+            If Len(d) = 1 Then d = "0" & d
+
+            result = y & m & d
+        End If
+    End If
+
+    ConvertToYYYYMMDD = result
+    Exit Function
+
+ConvertErr:
+    ConvertToYYYYMMDD = ""
+End Function
+
+' 과거 시세 가져오기 (네이버 일별 시세 API) - 한 번의 API 호출로 당일+전일 시세 모두 조회
 Private Sub GetNaverHistoricalPrice(stockCode As String, targetDate As String, ByRef price As String, ByRef change As String, ByRef changePercent As String)
     Dim http As Object
     Dim url As String
@@ -493,8 +522,12 @@ Private Sub GetNaverHistoricalPrice(stockCode As String, targetDate As String, B
     Dim prevPrice As Double
     Dim diff As Double
     Dim pct As Double
-    Dim foundDate As String
     Dim cleanLine As String
+    Dim prevDate As String
+    Dim dataRows() As String
+    Dim dataCount As Long
+    Dim targetDateStr As String
+    Dim foundIdx As Long
 
     On Error GoTo HistError
 
@@ -502,8 +535,10 @@ Private Sub GetNaverHistoricalPrice(stockCode As String, targetDate As String, B
     change = "-"
     changePercent = "-"
 
-    ' 네이버 일별 시세 API (최근 30일)
-    url = "https://fchart.stock.naver.com/siseJson.nhn?symbol=" & stockCode & "&requestType=1&startTime=" & targetDate & "&endTime=" & targetDate & "&timeframe=day"
+    ' 10일 전부터 조회 (주말/공휴일 고려)
+    prevDate = Format(DateAdd("d", -10, CDate(Left(targetDate, 4) & "-" & Mid(targetDate, 5, 2) & "-" & Right(targetDate, 2))), "yyyymmdd")
+
+    url = "https://fchart.stock.naver.com/siseJson.nhn?symbol=" & stockCode & "&requestType=1&startTime=" & prevDate & "&endTime=" & targetDate & "&timeframe=day"
 
     Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
     http.Open "GET", url, False
@@ -524,45 +559,52 @@ Private Sub GetNaverHistoricalPrice(stockCode As String, targetDate As String, B
 
         lines = Split(response, "|")
 
-        ' 데이터 행 찾기 (헤더 건너뛰기)
+        ' 유효한 데이터 행만 추출
+        ReDim dataRows(1 To UBound(lines))
+        dataCount = 0
+
         For i = 1 To UBound(lines)
             cleanLine = Trim(lines(i))
             If Len(cleanLine) > 10 Then
                 values = Split(cleanLine, ",")
                 If UBound(values) >= 4 Then
-                    ' 날짜,시가,고가,저가,종가,거래량
-                    foundDate = Trim(values(0))
-
-                    ' 종가 추출
-                    curPrice = Val(Trim(values(4)))
-
-                    If curPrice > 0 Then
-                        price = Format(curPrice, "#,##0")
-
-                        ' 전일 시세 가져오기 (전일대비 계산용)
-                        prevPrice = GetPreviousDayPrice(stockCode, targetDate)
-
-                        If prevPrice > 0 Then
-                            diff = curPrice - prevPrice
-                            pct = (diff / prevPrice) * 100
-
-                            If diff > 0 Then
-                                change = "+" & Format(diff, "#,##0")
-                                changePercent = "+" & Format(pct, "0.00") & "%"
-                            ElseIf diff < 0 Then
-                                change = Format(diff, "#,##0")
-                                changePercent = Format(pct, "0.00") & "%"
-                            Else
-                                change = "0"
-                                changePercent = "0.00%"
-                            End If
-                        End If
-
-                        Exit For
-                    End If
+                    dataCount = dataCount + 1
+                    dataRows(dataCount) = cleanLine
                 End If
             End If
         Next i
+
+        ' 마지막 데이터가 조회 대상 날짜
+        If dataCount >= 1 Then
+            values = Split(dataRows(dataCount), ",")
+            curPrice = Val(Trim(values(4)))
+
+            If curPrice > 0 Then
+                price = Format(curPrice, "#,##0")
+
+                ' 전일 데이터 (마지막에서 두 번째)
+                If dataCount >= 2 Then
+                    values = Split(dataRows(dataCount - 1), ",")
+                    prevPrice = Val(Trim(values(4)))
+
+                    If prevPrice > 0 Then
+                        diff = curPrice - prevPrice
+                        pct = (diff / prevPrice) * 100
+
+                        If diff > 0 Then
+                            change = "+" & Format(diff, "#,##0")
+                            changePercent = "+" & Format(pct, "0.00") & "%"
+                        ElseIf diff < 0 Then
+                            change = Format(diff, "#,##0")
+                            changePercent = Format(pct, "0.00") & "%"
+                        Else
+                            change = "0"
+                            changePercent = "0.00%"
+                        End If
+                    End If
+                End If
+            End If
+        End If
     End If
 
     Set http = Nothing
@@ -574,63 +616,6 @@ HistError:
     changePercent = "-"
     If Not http Is Nothing Then Set http = Nothing
 End Sub
-
-' 전일 종가 가져오기
-Private Function GetPreviousDayPrice(stockCode As String, targetDate As String) As Double
-    Dim http As Object
-    Dim url As String
-    Dim response As String
-    Dim lines() As String
-    Dim values() As String
-    Dim i As Long
-    Dim prevDate As String
-    Dim cleanLine As String
-
-    On Error GoTo PrevError
-
-    ' 전일 날짜 계산 (간단히 하루 전)
-    prevDate = Format(DateAdd("d", -7, CDate(Left(targetDate, 4) & "-" & Mid(targetDate, 5, 2) & "-" & Right(targetDate, 2))), "yyyymmdd")
-
-    url = "https://fchart.stock.naver.com/siseJson.nhn?symbol=" & stockCode & "&requestType=1&startTime=" & prevDate & "&endTime=" & targetDate & "&timeframe=day"
-
-    Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
-    http.Open "GET", url, False
-    http.setRequestHeader "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    http.SetTimeouts 5000, 5000, 10000, 10000
-    http.send
-
-    If http.Status = 200 Then
-        response = http.responseText
-
-        response = Replace(response, "[", "")
-        response = Replace(response, "]", "")
-        response = Replace(response, "'", "")
-        response = Replace(response, """", "")
-        response = Replace(response, vbLf, "|")
-        response = Replace(response, vbCr, "")
-
-        lines = Split(response, "|")
-
-        ' 마지막에서 두 번째 데이터 행이 전일
-        For i = UBound(lines) - 1 To 1 Step -1
-            cleanLine = Trim(lines(i))
-            If Len(cleanLine) > 10 Then
-                values = Split(cleanLine, ",")
-                If UBound(values) >= 4 Then
-                    GetPreviousDayPrice = Val(Trim(values(4)))
-                    Exit For
-                End If
-            End If
-        Next i
-    End If
-
-    Set http = Nothing
-    Exit Function
-
-PrevError:
-    GetPreviousDayPrice = 0
-    If Not http Is Nothing Then Set http = Nothing
-End Function
 
 ' 과거 시세 조회용 헤더 설정 (탭 이름이 날짜이므로 조회날짜 컬럼 제외)
 Private Sub SetupHeaderForHistorical(ws As Worksheet)
