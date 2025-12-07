@@ -144,9 +144,10 @@ Private Sub GetYahooStockPrice(stockCode As String, market As String, ByRef pric
     ' Yahoo Finance API
     url = "https://query1.finance.yahoo.com/v8/finance/chart/" & symbol & "?interval=1d&range=1d"
 
-    Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+    Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
     http.Open "GET", url, False
-    http.setRequestHeader "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    http.setRequestHeader "User-Agent", "Mozilla/5.0"
+    http.SetTimeouts 5000, 5000, 10000, 10000
     http.send
 
     If http.Status = 200 Then
