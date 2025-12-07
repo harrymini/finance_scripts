@@ -1,15 +1,23 @@
 ' =====================================================
 ' 주식 현재가 추적 VBA 스크립트 (Windows용 - 네이버 금융)
+' 버전: 2.0
+' 최종 수정: 2025-12-07
 '
 ' 사용법:
 ' 1. 엑셀에서 Alt + F11로 VBA 편집기 열기
 ' 2. 삽입 > 모듈
 ' 3. 이 코드 붙여넣기
-' 4. UpdateStockPrices 실행
+' 4. UpdateStockPrices 실행 (현재가 조회)
+'    또는 UpdateStockPricesByDate 실행 (과거 날짜별 조회)
 '
 ' 데이터 시트 구조:
-' 1행: 헤더 (종목명, 종목코드)
+' 1행: 헤더 (종목명, 종목코드, [날짜1, 날짜2, ...])
 ' 2행부터: 데이터 (A열: 종목명, B열: 종목코드)
+' C열부터: 조회할 날짜들 (yyyy-mm-dd 형식, UpdateStockPricesByDate용)
+'
+' 변경 이력:
+' v2.0 - 과거 날짜별 시세 조회 기능 추가 (C열 날짜 배열 → 각 날짜별 탭 생성)
+' v1.0 - 현재가 조회 기능
 ' =====================================================
 
 Option Explicit
@@ -315,23 +323,30 @@ Private Sub ApplyPriceColor(ws As Worksheet, rowNum As Long, priceChange As Stri
 End Sub
 
 ' =====================================================
-' 특정 날짜 시세 조회 (C열에 날짜 입력)
-' 데이터 시트: A열=종목명, B열=종목코드, C열=조회날짜(yyyy-mm-dd)
+' 과거 날짜별 시세 조회 (C열 날짜 배열 → 각 날짜별 탭 생성)
+' 데이터 시트: A열=종목명, B열=종목코드, C열~=조회날짜 배열
+' C1, D1, E1... 에 날짜를 입력하면 각 날짜별로 탭 생성
 ' =====================================================
 Sub UpdateStockPricesByDate()
     Dim wsData As Worksheet
     Dim wsResult As Worksheet
-    Dim sheetName As String
     Dim lastRow As Long
+    Dim lastCol As Long
+    Dim col As Long
     Dim i As Long
     Dim rowNum As Long
     Dim stockName As String
     Dim stockCode As String
     Dim targetDate As String
+    Dim targetDateFormatted As String
     Dim currentPrice As String
     Dim priceChange As String
     Dim changePercent As String
-    Dim processedCount As Long
+    Dim dateCount As Long
+    Dim stockCount As Long
+    Dim totalProcessed As Long
+    Dim dates() As String
+    Dim dateIdx As Long
 
     On Error GoTo ErrorHandler
 
@@ -344,45 +359,81 @@ Sub UpdateStockPricesByDate()
         Exit Sub
     End If
 
-    ' 결과 시트 이름 입력
-    sheetName = InputBox("결과 시트 이름:", "시트 이름", "과거시세")
-    If sheetName = "" Then Exit Sub
-
-    Set wsResult = GetOrCreateSheet(sheetName)
-    SetupHeaderWithDate wsResult
-
+    ' 종목 수 확인 (A열)
     lastRow = wsData.Cells(wsData.Rows.count, "A").End(xlUp).Row
-
     If lastRow < 2 Then
         MsgBox "데이터 시트에 종목 데이터가 없습니다.", vbExclamation, "오류"
         Exit Sub
     End If
 
+    ' 날짜 배열 확인 (C열부터 1행)
+    lastCol = wsData.Cells(1, wsData.Columns.count).End(xlToLeft).Column
+    If lastCol < 3 Then
+        MsgBox "C열부터 조회할 날짜를 입력해주세요." & vbCrLf & _
+               "(예: C1=2024-12-01, D1=2024-12-02, ...)", vbExclamation, "오류"
+        Exit Sub
+    End If
+
+    ' 날짜 배열 수집
+    dateCount = 0
+    ReDim dates(1 To lastCol - 2)
+
+    For col = 3 To lastCol
+        If wsData.Cells(1, col).Value <> "" Then
+            dateCount = dateCount + 1
+            If IsDate(wsData.Cells(1, col).Value) Then
+                dates(dateCount) = Format(wsData.Cells(1, col).Value, "yyyymmdd")
+            Else
+                dates(dateCount) = Trim(CStr(wsData.Cells(1, col).Value))
+                dates(dateCount) = Replace(dates(dateCount), "-", "")
+                dates(dateCount) = Replace(dates(dateCount), "/", "")
+            End If
+        End If
+    Next col
+
+    If dateCount = 0 Then
+        MsgBox "조회할 날짜가 없습니다.", vbExclamation, "오류"
+        Exit Sub
+    End If
+
+    stockCount = lastRow - 1
+
+    If MsgBox("총 " & dateCount & "개 날짜, " & stockCount & "개 종목을 조회합니다." & vbCrLf & _
+              "각 날짜별로 새 탭이 생성됩니다." & vbCrLf & vbCrLf & _
+              "계속하시겠습니까?", vbYesNo + vbQuestion, "확인") = vbNo Then
+        Exit Sub
+    End If
+
     Application.ScreenUpdating = False
-    Application.StatusBar = "과거 시세 조회 중..."
+    totalProcessed = 0
 
-    processedCount = 0
-    rowNum = 2
+    ' 각 날짜별로 탭 생성 및 데이터 조회
+    For dateIdx = 1 To dateCount
+        targetDate = dates(dateIdx)
 
-    For i = 2 To lastRow
-        stockName = Trim(CStr(wsData.Cells(i, 1).Value))
-        stockCode = Trim(CStr(wsData.Cells(i, 2).Value))
+        If Len(targetDate) <> 8 Then GoTo NextDate
 
-        ' C열에서 날짜 가져오기
-        If IsDate(wsData.Cells(i, 3).Value) Then
-            targetDate = Format(wsData.Cells(i, 3).Value, "yyyymmdd")
-        Else
-            targetDate = Trim(CStr(wsData.Cells(i, 3).Value))
-            targetDate = Replace(targetDate, "-", "")
-            targetDate = Replace(targetDate, "/", "")
-        End If
+        ' 탭 이름은 yyyy-mm-dd 형식
+        targetDateFormatted = Left(targetDate, 4) & "-" & Mid(targetDate, 5, 2) & "-" & Right(targetDate, 2)
 
-        If stockName = "" And stockCode = "" Then
-            GoTo NextRowByDate
-        End If
+        Application.StatusBar = "탭 생성 중: " & targetDateFormatted & " (" & dateIdx & "/" & dateCount & ")"
+        DoEvents
 
-        If stockCode <> "" And Len(targetDate) = 8 Then
-            Application.StatusBar = "처리 중: " & stockName & " (" & processedCount + 1 & "/" & (lastRow - 1) & ")"
+        ' 해당 날짜 탭 생성/가져오기
+        Set wsResult = GetOrCreateSheet(targetDateFormatted)
+        SetupHeaderForHistorical wsResult
+
+        rowNum = 2
+
+        ' 모든 종목에 대해 해당 날짜 시세 조회
+        For i = 2 To lastRow
+            stockName = Trim(CStr(wsData.Cells(i, 1).Value))
+            stockCode = Trim(CStr(wsData.Cells(i, 2).Value))
+
+            If stockName = "" And stockCode = "" Then GoTo NextStock
+            If stockCode = "" Then GoTo NextStock
+
+            Application.StatusBar = targetDateFormatted & " - " & stockName & " (" & (i - 1) & "/" & stockCount & ")"
             DoEvents
 
             stockCode = CleanStockCode(stockCode)
@@ -392,33 +443,36 @@ Sub UpdateStockPricesByDate()
 
             wsResult.Cells(rowNum, 1).Value = stockName
             wsResult.Cells(rowNum, 2).Value = "'" & stockCode
-            wsResult.Cells(rowNum, 3).Value = Format(CDate(Left(targetDate, 4) & "-" & Mid(targetDate, 5, 2) & "-" & Right(targetDate, 2)), "yyyy-mm-dd")
+            wsResult.Cells(rowNum, 3).NumberFormat = "@"
+            wsResult.Cells(rowNum, 3).Value = currentPrice
             wsResult.Cells(rowNum, 4).NumberFormat = "@"
-            wsResult.Cells(rowNum, 4).Value = currentPrice
+            wsResult.Cells(rowNum, 4).Value = priceChange
             wsResult.Cells(rowNum, 5).NumberFormat = "@"
-            wsResult.Cells(rowNum, 5).Value = priceChange
-            wsResult.Cells(rowNum, 6).NumberFormat = "@"
-            wsResult.Cells(rowNum, 6).Value = changePercent
+            wsResult.Cells(rowNum, 5).Value = changePercent
+            wsResult.Cells(rowNum, 6).Value = Format(Now, "yyyy-mm-dd hh:mm:ss")
 
             ApplyPriceColorByDate wsResult, rowNum, priceChange
 
             rowNum = rowNum + 1
-            processedCount = processedCount + 1
+            totalProcessed = totalProcessed + 1
 
-            Delay 0.5
-        End If
+            Delay 0.3
 
-NextRowByDate:
-    Next i
+NextStock:
+        Next i
 
-    wsResult.Columns("A:F").AutoFit
+        wsResult.Columns("A:F").AutoFit
+
+NextDate:
+    Next dateIdx
 
     Application.StatusBar = False
     Application.ScreenUpdating = True
 
-    MsgBox "완료! " & processedCount & "개 종목 처리됨", vbInformation, "완료"
+    MsgBox "완료!" & vbCrLf & _
+           "생성된 탭: " & dateCount & "개" & vbCrLf & _
+           "처리된 데이터: " & totalProcessed & "건", vbInformation, "완료"
 
-    wsResult.Activate
     Exit Sub
 
 ErrorHandler:
@@ -578,14 +632,14 @@ PrevError:
     If Not http Is Nothing Then Set http = Nothing
 End Function
 
-' 날짜 포함 헤더 설정
-Private Sub SetupHeaderWithDate(ws As Worksheet)
+' 과거 시세 조회용 헤더 설정 (탭 이름이 날짜이므로 조회날짜 컬럼 제외)
+Private Sub SetupHeaderForHistorical(ws As Worksheet)
     ws.Cells(1, 1).Value = "종목명"
     ws.Cells(1, 2).Value = "종목코드"
-    ws.Cells(1, 3).Value = "조회날짜"
-    ws.Cells(1, 4).Value = "종가"
-    ws.Cells(1, 5).Value = "전일대비"
-    ws.Cells(1, 6).Value = "등락률"
+    ws.Cells(1, 3).Value = "종가"
+    ws.Cells(1, 4).Value = "전일대비"
+    ws.Cells(1, 5).Value = "등락률"
+    ws.Cells(1, 6).Value = "업데이트시간"
 
     With ws.Range("A1:F1")
         .Font.Bold = True
@@ -595,7 +649,7 @@ Private Sub SetupHeaderWithDate(ws As Worksheet)
     End With
 End Sub
 
-' 날짜 조회용 색상 적용
+' 날짜 조회용 색상 적용 (전일대비=4열, 등락률=5열)
 Private Sub ApplyPriceColorByDate(ws As Worksheet, rowNum As Long, priceChange As String)
     Dim changeVal As Double
 
@@ -604,11 +658,11 @@ Private Sub ApplyPriceColorByDate(ws As Worksheet, rowNum As Long, priceChange A
     On Error GoTo 0
 
     If changeVal > 0 Then
+        ws.Cells(rowNum, 4).Font.Color = RGB(255, 0, 0)
         ws.Cells(rowNum, 5).Font.Color = RGB(255, 0, 0)
-        ws.Cells(rowNum, 6).Font.Color = RGB(255, 0, 0)
     ElseIf changeVal < 0 Then
+        ws.Cells(rowNum, 4).Font.Color = RGB(0, 0, 255)
         ws.Cells(rowNum, 5).Font.Color = RGB(0, 0, 255)
-        ws.Cells(rowNum, 6).Font.Color = RGB(0, 0, 255)
     End If
 End Sub
 
