@@ -1,0 +1,352 @@
+// ============================================================================
+// Pine Script® 라이선스: MIT License
+// 작성자: Claude AI
+// 버전: 1.0 (2024)
+// ============================================================================
+//
+// 【전략 설명】
+// Hybrid Scalping Strategy: Heikin Ashi + Squeeze Momentum + EMA Filter
+// 1분봉/3분봉 스캘핑에 최적화된 하이브리드 전략
+//
+// 【핵심 개념】
+// 1. Heikin Ashi: 노이즈 제거된 캔들로 추세 방향 확인
+// 2. Squeeze Momentum: BB가 KC 안으로 수축 후 폭발 시점 포착
+// 3. EMA 21: 추세 필터로 역추세 진입 방지
+//
+// 【진입 조건】
+// 롱: 스퀴즈 해제 + 모멘텀 양수 + HA 양봉 + Close > EMA21
+// 숏: 스퀴즈 해제 + 모멘텀 음수 + HA 음봉 + Close < EMA21
+//
+// ============================================================================
+
+//@version=6
+indicator("Hybrid Scalping: HA + Squeeze + EMA", shorttitle="Hybrid Scalp", overlay=true, max_labels_count=500)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 1 - 입력 파라미터】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// Heikin Ashi 설정
+grp_ha = "Heikin Ashi 설정"
+showHA = input.bool(true, "Heikin Ashi 캔들 표시", group=grp_ha)
+haSmoothing = input.int(1, "HA 스무딩", minval=1, maxval=5, group=grp_ha, tooltip="높을수록 부드러움 (1=기본)")
+
+// Squeeze Momentum 설정
+grp_squeeze = "Squeeze Momentum 설정"
+bbLength = input.int(20, "BB 길이", minval=5, maxval=50, group=grp_squeeze)
+bbMult = input.float(2.0, "BB 배수", minval=0.5, maxval=4.0, step=0.1, group=grp_squeeze)
+kcLength = input.int(20, "KC 길이", minval=5, maxval=50, group=grp_squeeze)
+kcMult = input.float(1.5, "KC 배수", minval=0.5, maxval=4.0, step=0.1, group=grp_squeeze)
+momLength = input.int(12, "모멘텀 길이", minval=5, maxval=30, group=grp_squeeze)
+
+// EMA 필터 설정
+grp_ema = "EMA 필터 설정"
+emaLength = input.int(21, "EMA 길이", minval=5, maxval=100, group=grp_ema)
+useEmaFilter = input.bool(true, "EMA 필터 사용", group=grp_ema)
+
+// 손절/익절 설정
+grp_risk = "리스크 관리"
+atrLength = input.int(14, "ATR 길이", minval=5, maxval=50, group=grp_risk)
+slMultiplier = input.float(1.5, "손절 ATR 배수", minval=0.5, maxval=5.0, step=0.1, group=grp_risk)
+tp1Percent = input.float(0.5, "1차 익절 (%)", minval=0.1, maxval=5.0, step=0.1, group=grp_risk)
+tp2Percent = input.float(1.0, "2차 익절 (%)", minval=0.2, maxval=10.0, step=0.1, group=grp_risk)
+
+// 포지션 설정
+grp_position = "포지션 설정"
+positionType = input.string("BOTH", "포지션 타입", options=["LONG", "SHORT", "BOTH"], group=grp_position)
+
+// 시각화 설정
+grp_visual = "시각화"
+showSignals = input.bool(true, "매수/매도 신호 표시", group=grp_visual)
+showEma = input.bool(true, "EMA 라인 표시", group=grp_visual)
+showSqueeze = input.bool(true, "스퀴즈 배경 표시", group=grp_visual)
+showStopLoss = input.bool(true, "손절/익절 라인 표시", group=grp_visual)
+showInfoTable = input.bool(true, "정보 테이블 표시", group=grp_visual)
+
+// 알림 설정
+grp_alert = "알림"
+enableAlerts = input.bool(true, "알림 활성화", group=grp_alert)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 2 - Heikin Ashi 계산】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// Heikin Ashi 값 계산
+haClose = (open + high + low + close) / 4
+var float haOpen = na
+haOpen := na(haOpen[1]) ? (open + close) / 2 : (haOpen[1] + haClose[1]) / 2
+haHigh = math.max(high, math.max(haOpen, haClose))
+haLow = math.min(low, math.min(haOpen, haClose))
+
+// 스무딩 적용 (선택적)
+haCloseSmooth = ta.sma(haClose, haSmoothing)
+haOpenSmooth = ta.sma(haOpen, haSmoothing)
+
+// HA 캔들 방향
+haBullish = haCloseSmooth > haOpenSmooth
+haBearish = haCloseSmooth < haOpenSmooth
+
+// HA 캔들 시각화 (overlay)
+haColor = haBullish ? color.new(color.teal, 0) : color.new(color.red, 0)
+plotcandle(showHA ? haOpenSmooth : na, showHA ? haHigh : na, showHA ? haLow : na, showHA ? haCloseSmooth : na,
+           title="Heikin Ashi", color=haColor, wickcolor=haColor, bordercolor=haColor)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 3 - Squeeze Momentum 계산】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// Bollinger Bands
+bbBasis = ta.sma(close, bbLength)
+bbDev = bbMult * ta.stdev(close, bbLength)
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+
+// Keltner Channel
+kcBasis = ta.sma(close, kcLength)
+kcRange = ta.atr(kcLength)
+kcUpper = kcBasis + kcMult * kcRange
+kcLower = kcBasis - kcMult * kcRange
+
+// 스퀴즈 상태 (BB가 KC 안에 있으면 스퀴즈)
+sqzOn = bbLower > kcLower and bbUpper < kcUpper   // 스퀴즈 중
+sqzOff = bbLower < kcLower and bbUpper > kcUpper  // 스퀴즈 해제
+
+// 모멘텀 계산 (Linear Regression)
+highestHigh = ta.highest(high, momLength)
+lowestLow = ta.lowest(low, momLength)
+avgHL = ta.sma((highestHigh + lowestLow) / 2, momLength)
+avgClose = ta.sma(close, momLength)
+momentum = ta.linreg(close - ((highestHigh + lowestLow) / 2 + avgClose) / 2, momLength, 0)
+
+// 모멘텀 방향
+momUp = momentum > 0
+momDown = momentum < 0
+momIncreasing = momentum > momentum[1]
+momDecreasing = momentum < momentum[1]
+
+// 스퀴즈 해제 감지 (이전 봉 스퀴즈 → 현재 봉 해제)
+squeezeFired = sqzOn[1] and sqzOff
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 4 - EMA 필터】
+////////////////////////////////////////////////////////////////////////////////////////
+
+ema21 = ta.ema(close, emaLength)
+
+// EMA 필터 조건
+emaLongOk = not useEmaFilter or close > ema21
+emaShortOk = not useEmaFilter or close < ema21
+
+// EMA 라인 시각화
+plot(showEma ? ema21 : na, "EMA 21", color=color.orange, linewidth=2)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 5 - 신호 생성】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 롱 진입 조건
+longCondition = (positionType == "LONG" or positionType == "BOTH") and
+                sqzOff and                    // 스퀴즈 해제 상태
+                momUp and                     // 모멘텀 양수
+                momIncreasing and             // 모멘텀 증가 중
+                haBullish and                 // HA 양봉
+                emaLongOk                     // EMA 위
+
+// 숏 진입 조건
+shortCondition = (positionType == "SHORT" or positionType == "BOTH") and
+                 sqzOff and                   // 스퀴즈 해제 상태
+                 momDown and                  // 모멘텀 음수
+                 momDecreasing and            // 모멘텀 감소 중
+                 haBearish and                // HA 음봉
+                 emaShortOk                   // EMA 아래
+
+// 중복 신호 방지
+var bool inLongPosition = false
+var bool inShortPosition = false
+var float entryPrice = na
+var float stopLossPrice = na
+var float tp1Price = na
+var float tp2Price = na
+
+// ATR 계산
+atr = ta.atr(atrLength)
+
+// 롱 진입
+longEntry = longCondition and not inLongPosition and not inShortPosition
+if longEntry
+    inLongPosition := true
+    entryPrice := close
+    stopLossPrice := close - (atr * slMultiplier)
+    tp1Price := close * (1 + tp1Percent / 100)
+    tp2Price := close * (1 + tp2Percent / 100)
+
+// 숏 진입
+shortEntry = shortCondition and not inLongPosition and not inShortPosition
+if shortEntry
+    inShortPosition := true
+    entryPrice := close
+    stopLossPrice := close + (atr * slMultiplier)
+    tp1Price := close * (1 - tp1Percent / 100)
+    tp2Price := close * (1 - tp2Percent / 100)
+
+// 롱 청산 조건
+longExit = inLongPosition and (close <= stopLossPrice or close >= tp2Price or haBearish or (useEmaFilter and close < ema21))
+if longExit
+    inLongPosition := false
+    entryPrice := na
+    stopLossPrice := na
+    tp1Price := na
+    tp2Price := na
+
+// 숏 청산 조건
+shortExit = inShortPosition and (close >= stopLossPrice or close <= tp2Price or haBullish or (useEmaFilter and close > ema21))
+if shortExit
+    inShortPosition := false
+    entryPrice := na
+    stopLossPrice := na
+    tp1Price := na
+    tp2Price := na
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 6 - 시각화】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 스퀴즈 배경색
+bgcolor(showSqueeze and sqzOn ? color.new(color.black, 85) : na, title="스퀴즈 중")
+bgcolor(showSqueeze and squeezeFired and momUp ? color.new(color.green, 90) : na, title="상방 폭발")
+bgcolor(showSqueeze and squeezeFired and momDown ? color.new(color.red, 90) : na, title="하방 폭발")
+
+// 포지션 배경색
+bgcolor(inLongPosition ? color.new(color.green, 93) : na, title="롱 포지션")
+bgcolor(inShortPosition ? color.new(color.red, 93) : na, title="숏 포지션")
+
+// 진입 신호 라벨
+if showSignals and longEntry
+    label.new(bar_index, low - atr, "🟢 LONG",
+              style=label.style_label_up,
+              color=color.new(color.green, 0),
+              textcolor=color.white,
+              size=size.normal)
+
+if showSignals and shortEntry
+    label.new(bar_index, high + atr, "🔴 SHORT",
+              style=label.style_label_down,
+              color=color.new(color.red, 0),
+              textcolor=color.white,
+              size=size.normal)
+
+// 손절/익절 라인
+plot(showStopLoss and not na(stopLossPrice) ? stopLossPrice : na, "손절", color=color.red, style=plot.style_linebr, linewidth=1)
+plot(showStopLoss and not na(tp1Price) ? tp1Price : na, "익절1", color=color.new(color.green, 50), style=plot.style_linebr, linewidth=1)
+plot(showStopLoss and not na(tp2Price) ? tp2Price : na, "익절2", color=color.green, style=plot.style_linebr, linewidth=1)
+
+// 진입가 라인
+plot(not na(entryPrice) ? entryPrice : na, "진입가", color=color.blue, style=plot.style_linebr, linewidth=1)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 7 - 하단 Squeeze Histogram (별도 패널)】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// 모멘텀 히스토그램 색상
+momColor = momUp and momIncreasing ? color.lime :
+           momUp and momDecreasing ? color.green :
+           momDown and momDecreasing ? color.red :
+           momDown and momIncreasing ? color.maroon : color.gray
+
+// 스퀴즈 상태 표시 (점)
+plotshape(sqzOn, "스퀴즈 ON", shape.diamond, location.bottom, color.new(color.orange, 0), size=size.tiny)
+plotshape(sqzOff and not sqzOn, "스퀴즈 OFF", shape.diamond, location.bottom, color.new(color.aqua, 0), size=size.tiny)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 8 - 알림】
+////////////////////////////////////////////////////////////////////////////////////////
+
+// Alert conditions
+alertcondition(longEntry, title="롱 진입", message="🟢 {{ticker}} | LONG 진입! 가격: {{close}}")
+alertcondition(shortEntry, title="숏 진입", message="🔴 {{ticker}} | SHORT 진입! 가격: {{close}}")
+alertcondition(squeezeFired, title="스퀴즈 해제", message="💥 {{ticker}} | 스퀴즈 해제! 폭발 임박")
+
+// 실시간 알림
+if enableAlerts and longEntry
+    alert(str.format("🟢 {0} | LONG 진입\n가격: {1}\n손절: {2}\n익절: {3}",
+          syminfo.ticker, str.tostring(close, format.mintick),
+          str.tostring(stopLossPrice, format.mintick),
+          str.tostring(tp1Price, format.mintick)), alert.freq_once_per_bar_close)
+
+if enableAlerts and shortEntry
+    alert(str.format("🔴 {0} | SHORT 진입\n가격: {1}\n손절: {2}\n익절: {3}",
+          syminfo.ticker, str.tostring(close, format.mintick),
+          str.tostring(stopLossPrice, format.mintick),
+          str.tostring(tp1Price, format.mintick)), alert.freq_once_per_bar_close)
+
+if enableAlerts and squeezeFired
+    alert(str.format("💥 {0} | 스퀴즈 해제! 방향: {1}",
+          syminfo.ticker, momUp ? "상방 ⬆️" : "하방 ⬇️"), alert.freq_once_per_bar_close)
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+// 【PART 9 - 정보 테이블】
+////////////////////////////////////////////////////////////////////////////////////////
+
+if showInfoTable
+    var table infoTable = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 80), border_width=1)
+
+    if barstate.islast
+        // 헤더
+        table.cell(infoTable, 0, 0, "Hybrid Scalping", text_color=color.white, text_size=size.small)
+        table.cell(infoTable, 1, 0, "v1.0", text_color=color.gray, text_size=size.small)
+
+        // Heikin Ashi 상태
+        table.cell(infoTable, 0, 1, "HA 추세", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 1, haBullish ? "🟢 상승" : "🔴 하락",
+                   text_color=haBullish ? color.green : color.red, text_size=size.tiny)
+
+        // 스퀴즈 상태
+        sqzStatus = sqzOn ? "🟠 스퀴즈 중" : "🔵 해제됨"
+        table.cell(infoTable, 0, 2, "스퀴즈", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 2, sqzStatus, text_color=sqzOn ? color.orange : color.aqua, text_size=size.tiny)
+
+        // 모멘텀
+        momStatus = momUp ? (momIncreasing ? "⬆️ 강세" : "↗️ 약화") : (momDecreasing ? "⬇️ 강세" : "↘️ 약화")
+        table.cell(infoTable, 0, 3, "모멘텀", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 3, momStatus, text_color=momUp ? color.green : color.red, text_size=size.tiny)
+
+        // EMA 상태
+        emaStatus = close > ema21 ? "위 ⬆️" : "아래 ⬇️"
+        table.cell(infoTable, 0, 4, "EMA 21", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 4, emaStatus, text_color=close > ema21 ? color.green : color.red, text_size=size.tiny)
+
+        // 포지션 상태
+        posStatus = inLongPosition ? "🟢 롱" : inShortPosition ? "🔴 숏" : "⚪ 없음"
+        table.cell(infoTable, 0, 5, "포지션", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 5, posStatus, text_color=color.white, text_size=size.tiny)
+
+        // 진입가
+        table.cell(infoTable, 0, 6, "진입가", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 6, na(entryPrice) ? "-" : str.tostring(entryPrice, format.mintick),
+                   text_color=color.blue, text_size=size.tiny)
+
+        // 손절가
+        table.cell(infoTable, 0, 7, "손절가", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 7, na(stopLossPrice) ? "-" : str.tostring(stopLossPrice, format.mintick),
+                   text_color=color.red, text_size=size.tiny)
+
+        // 익절가
+        table.cell(infoTable, 0, 8, "익절1", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 8, na(tp1Price) ? "-" : str.tostring(tp1Price, format.mintick),
+                   text_color=color.green, text_size=size.tiny)
+
+        // 수익률
+        currentPnL = inLongPosition ? (close - entryPrice) / entryPrice * 100 :
+                     inShortPosition ? (entryPrice - close) / entryPrice * 100 : 0.0
+        table.cell(infoTable, 0, 9, "수익률", text_color=color.gray, text_size=size.tiny)
+        table.cell(infoTable, 1, 9, na(entryPrice) ? "-" : str.tostring(currentPnL, "#.##") + "%",
+                   text_color=currentPnL >= 0 ? color.green : color.red, text_size=size.tiny)
