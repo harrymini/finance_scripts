@@ -1188,7 +1188,23 @@ function analyzeGlobalLiquidity() {
   } catch (e) {
     Logger.log(`❌ 글로벌 유동성 분석 오류: ${e.message}`);
     SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
-    return { score: 0, signal: 'ERROR', timestamp: new Date() };
+    return {
+      score: 0,
+      signal: 'ERROR',
+      timestamp: new Date(),
+      recommendation: '오류 발생 - 데이터 확인 필요',
+      regime: 'UNKNOWN',
+      fedPolicy: null,
+      weights: { US: 0.40, DXY: 0.20, China: 0.20, Japan: 0.10, EM: 0.10 },
+      componentScores: { us: 0, dxy: 0, china: 0, japan: 0, em: 0 },
+      details: {
+        us: { walcl: 0, walcl_wow: 0, tga: { current: 0, week_change: 0 }, onrrp: 0 },
+        dxy: { level: 0, change: 0, contextual: null },
+        china: { m2_growth: 0, total_credit: 0, fx_reserves: 0 },
+        japan: { usdjpy: 0, jgb_10y: 0, us_jpy_spread: 0 },
+        em: { usdkrw: 0, usdbrl: 0, strength_index: 0 }
+      }
+    };
   }
 }
 
