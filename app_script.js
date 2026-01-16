@@ -1672,7 +1672,7 @@ function populateGlobalHistoryFromJanuary() {
         'TGA(M$)', 'TGA WoW',
         'ON RRP(M$)',
         'DXY', 'DXY WoW',
-        '중국 M2(%)', '중국 신용', '중국 FX',
+        'USD/CNY', 'CNY 변화(%)', '중국 신호',  // v4.1
         'USD/JPY', 'JGB 10Y', 'US-JP 스프레드',
         'USD/KRW', 'USD/BRL', 'EM 강세지수',
         '유동성 점수', '신호', '투자 권장'
@@ -1691,44 +1691,38 @@ function populateGlobalHistoryFromJanuary() {
     Logger.log('📥 FRED 데이터 수집 중...');
 
     // US 지표
-    ss.toast('📥 1/13: WALCL 데이터 수집 중...', '진행 중', -1);
+    ss.toast('📥 1/11: WALCL 데이터 수집 중...', '진행 중', -1);
     const walclData = getFredDataRange(CONFIG.FRED_IDS.WALCL, startDate);
 
-    ss.toast('📥 2/13: TGA 데이터 수집 중...', '진행 중', -1);
+    ss.toast('📥 2/11: TGA 데이터 수집 중...', '진행 중', -1);
     const tgaData = getFredDataRange(CONFIG.FRED_IDS.TGA, startDate);
 
-    ss.toast('📥 3/13: ON RRP 데이터 수집 중...', '진행 중', -1);
+    ss.toast('📥 3/11: ON RRP 데이터 수집 중...', '진행 중', -1);
     const onRrpData = getFredDataRange(CONFIG.FRED_IDS.ON_RRP, startDate);
 
     // Global 지표
-    ss.toast('📥 4/13: DXY 데이터 수집 중...', '진행 중', -1);
+    ss.toast('📥 4/11: DXY 데이터 수집 중...', '진행 중', -1);
     const dxyData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.DXY, startDate);
 
-    ss.toast('📥 5/13: 중국 M2 데이터 수집 중...', '진행 중', -1);
-    const chinaM2Data = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_M2_YOY, startDate);
+    ss.toast('📥 5/11: USD/CNY 데이터 수집 중...', '진행 중', -1);
+    const usdcnyData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDCNY, startDate);
 
-    ss.toast('📥 6/13: 중국 신용 데이터 수집 중...', '진행 중', -1);
-    const chinaLoanData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_LOAN, startDate);
-
-    ss.toast('📥 7/13: 중국 FX 데이터 수집 중...', '진행 중', -1);
-    const chinaReservesData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_RESERVES, startDate);
-
-    ss.toast('📥 8/13: USD/JPY 데이터 수집 중...', '진행 중', -1);
+    ss.toast('📥 6/11: USD/JPY 데이터 수집 중...', '진행 중', -1);
     const usdjpyData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDJPY, startDate);
 
-    ss.toast('📥 9/13: JGB 10Y 데이터 수집 중...', '진행 중', -1);
+    ss.toast('📥 7/11: JGB 10Y 데이터 수집 중...', '진행 중', -1);
     const jgb10yData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.JGB_10Y, startDate);
 
-    ss.toast('📥 10/13: US 10Y 데이터 수집 중...', '진행 중', -1);
+    ss.toast('📥 8/11: US 10Y 데이터 수집 중...', '진행 중', -1);
     const us10yData = getFredDataRange('DGS10', startDate);
 
-    ss.toast('📥 11/13: USD/KRW 데이터 수집 중...', '진행 중', -1);
+    ss.toast('📥 9/11: USD/KRW 데이터 수집 중...', '진행 중', -1);
     const usdkrwData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDKRW, startDate);
 
-    ss.toast('📥 12/13: USD/BRL 데이터 수집 중...', '진행 중', -1);
+    ss.toast('📥 10/11: USD/BRL 데이터 수집 중...', '진행 중', -1);
     const usdbrData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDBRL, startDate);
 
-    ss.toast('📥 13/13: USD/MXN 데이터 수집 중...', '진행 중', -1);
+    ss.toast('📥 11/11: USD/MXN 데이터 수집 중...', '진행 중', -1);
     const usdmxnData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDMXN, startDate);
 
     ss.toast('📊 데이터 처리 중...', '진행 중', -1);
@@ -1764,9 +1758,10 @@ function populateGlobalHistoryFromJanuary() {
       const dxy_prev = i > 0 ? getClosestValue(dxyData, walclDates[i-1]) : dxy;
       const dxy_wow = dxy - dxy_prev;
 
-      const chinaM2 = getClosestValue(chinaM2Data, date);
-      const chinaLoan = getClosestValue(chinaLoanData, date);
-      const chinaReserves = getClosestValue(chinaReservesData, date);
+      // v4.1: USD/CNY 데이터 및 변화율 계산
+      const usdcny = getClosestValue(usdcnyData, date);
+      const usdcny_prev = i > 0 ? getClosestValue(usdcnyData, walclDates[i-1]) : usdcny;
+      const usdcny_change = usdcny_prev !== 0 ? ((usdcny - usdcny_prev) / usdcny_prev) * 100 : 0;
 
       const usdjpy = getClosestValue(usdjpyData, date);
       const jgb10y = getClosestValue(jgb10yData, date);
@@ -1814,11 +1809,9 @@ function populateGlobalHistoryFromJanuary() {
       else if (dxy_wow > 2) liquidityScore -= 25;
       else if (dxy_wow > 1) liquidityScore -= 20;
 
-      // 중국 요인 (20%)
-      if (chinaM2 > 12) liquidityScore += 20;
-      else if (chinaM2 > 10) liquidityScore += 15;
-      else if (chinaM2 < 6) liquidityScore -= 20;
-      else if (chinaM2 < 8) liquidityScore -= 10;
+      // v4.1: 중국 요인 (5%) - DXY+CNY 조합 로직
+      const chinaSignal = determineChinaSignal(dxy_wow, usdcny_change);
+      liquidityScore += chinaSignal.score;
 
       // 일본 요인 (10%)
       if (usdjpy > 155) liquidityScore -= 15;
@@ -1870,9 +1863,9 @@ function populateGlobalHistoryFromJanuary() {
         onRrp,
         dxy,
         dxy_wow,
-        chinaM2,
-        chinaLoan,
-        chinaReserves,
+        usdcny,                // v4.1: USD/CNY 환율
+        usdcny_change,         // v4.1: CNY 변화율 (%)
+        chinaSignal.signal,    // v4.1: 중국 신호
         usdjpy,
         jgb10y,
         usJpSpread,
