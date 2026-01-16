@@ -1558,10 +1558,11 @@ function populateHistoryFromJanuary() {
  */
 function populateGlobalHistoryFromJanuary() {
   try {
+    const ss = SpreadsheetApp.getActive();
     const ui = SpreadsheetApp.getUi();
     const result = ui.alert(
       'Global History 데이터 업데이트',
-      '올해 1월 1일부터 현재까지 데이터를 Global_History 시트에 추가합니다.\n\n⚠️ 이 작업은 시간이 걸릴 수 있습니다.\n\n계속하시겠습니까?',
+      '올해 1월 1일부터 현재까지 데이터를 Global_History 시트에 추가합니다.\n\n⚠️ 이 작업은 2-3분 소요됩니다. (13개 API 호출)\n\n진행 상황은 우측 하단 토스트에서 확인하세요.\n\n계속하시겠습니까?',
       ui.ButtonSet.YES_NO
     );
 
@@ -1570,8 +1571,8 @@ function populateGlobalHistoryFromJanuary() {
     }
 
     Logger.log('=== Global_History 시트 일괄 업데이트 시작 ===');
+    ss.toast('🚀 Global History 업데이트 시작...', '진행 중', -1);
 
-    const ss = SpreadsheetApp.getActive();
     let globalHistorySheet = ss.getSheetByName(CONFIG.GLOBAL_HISTORY_SHEET);
 
     // Global_History 시트가 없으면 생성
@@ -1598,25 +1599,51 @@ function populateGlobalHistoryFromJanuary() {
     // 올해 1월 1일
     const startDate = new Date('2025-01-01');
 
-    // 모든 지표의 데이터 가져오기
+    // 모든 지표의 데이터 가져오기 (진행 상황 표시)
     Logger.log('📥 FRED 데이터 수집 중...');
 
     // US 지표
+    ss.toast('📥 1/13: WALCL 데이터 수집 중...', '진행 중', -1);
     const walclData = getFredDataRange(CONFIG.FRED_IDS.WALCL, startDate);
+
+    ss.toast('📥 2/13: TGA 데이터 수집 중...', '진행 중', -1);
     const tgaData = getFredDataRange(CONFIG.FRED_IDS.TGA, startDate);
+
+    ss.toast('📥 3/13: ON RRP 데이터 수집 중...', '진행 중', -1);
     const onRrpData = getFredDataRange(CONFIG.FRED_IDS.ON_RRP, startDate);
 
     // Global 지표
+    ss.toast('📥 4/13: DXY 데이터 수집 중...', '진행 중', -1);
     const dxyData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.DXY, startDate);
+
+    ss.toast('📥 5/13: 중국 M2 데이터 수집 중...', '진행 중', -1);
     const chinaM2Data = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_M2_YOY, startDate);
+
+    ss.toast('📥 6/13: 중국 신용 데이터 수집 중...', '진행 중', -1);
     const chinaLoanData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_LOAN, startDate);
+
+    ss.toast('📥 7/13: 중국 FX 데이터 수집 중...', '진행 중', -1);
     const chinaReservesData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_RESERVES, startDate);
+
+    ss.toast('📥 8/13: USD/JPY 데이터 수집 중...', '진행 중', -1);
     const usdjpyData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDJPY, startDate);
+
+    ss.toast('📥 9/13: JGB 10Y 데이터 수집 중...', '진행 중', -1);
     const jgb10yData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.JGB_10Y, startDate);
+
+    ss.toast('📥 10/13: US 10Y 데이터 수집 중...', '진행 중', -1);
     const us10yData = getFredDataRange('DGS10', startDate);
+
+    ss.toast('📥 11/13: USD/KRW 데이터 수집 중...', '진행 중', -1);
     const usdkrwData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDKRW, startDate);
+
+    ss.toast('📥 12/13: USD/BRL 데이터 수집 중...', '진행 중', -1);
     const usdbrData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDBRL, startDate);
+
+    ss.toast('📥 13/13: USD/MXN 데이터 수집 중...', '진행 중', -1);
     const usdmxnData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDMXN, startDate);
+
+    ss.toast('📊 데이터 처리 중...', '진행 중', -1);
 
     // WALCL을 기준으로 날짜 목록 생성 (주간 데이터)
     const walclDates = Object.keys(walclData).sort();
@@ -1772,9 +1799,11 @@ function populateGlobalHistoryFromJanuary() {
 
     // Global_History 시트에 모든 행 추가
     if (rows.length > 0) {
+      ss.toast('💾 시트에 저장 중...', '진행 중', -1);
       globalHistorySheet.getRange(globalHistorySheet.getLastRow() + 1, 1, rows.length, 20).setValues(rows);
       Logger.log(`✅ ${rows.length}개 행이 Global_History 시트에 추가됨`);
 
+      ss.toast(`✅ ${rows.length}개 데이터 저장 완료!`, '완료', 5);
       ui.alert(
         '✅ 완료',
         `${rows.length}개 데이터 포인트가 Global_History 시트에 추가되었습니다.\n\n기간: ${walclDates[0]} ~ ${walclDates[walclDates.length-1]}`,
@@ -1786,7 +1815,12 @@ function populateGlobalHistoryFromJanuary() {
 
   } catch (e) {
     Logger.log(`❌ Global_History 업데이트 오류: ${e.message}`);
-    SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
+    try {
+      SpreadsheetApp.getActive().toast(`❌ 오류: ${e.message}`, '오류', 10);
+      SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
+    } catch (uiError) {
+      Logger.log('UI 알림 불가 (트리거 실행 중)');
+    }
   }
 }
 
