@@ -1,5 +1,5 @@
 /****************************************************
- * Global Liquidity Monitor v3.1 - 세밀한 점수 체계
+ * Global Liquidity Monitor v4.0 - 동적 가중치 + Fed 정책 추적
  *
  * 주요 기능:
  * 1. 미국 유동성 모니터링 (WALCL, TGA, ON RRP)
@@ -9,6 +9,12 @@
  * 5. 알림 설정/해제 기능 (±50, ±80 임계값)
  * 6. 히스토리 자동 누적 (History, Global_History, Alert_History)
  * 7. 점수 계산 가이드 시트 자동 생성
+ *
+ * v4.0 신규 기능 (2026-01):
+ * 8. 동적 가중치 시스템 (시장 국면별 가중치 자동 조정)
+ * 9. Fed 정책 추적 강화 (QT/QE 상태, 금리 사이클, Reserve Balances)
+ * 10. 맥락 기반 DXY 스코어링 (Fed 완화기 DXY 하락 = 긍정)
+ * 11. 추세 기반 알림 시스템 (모멘텀/추세 변화 감지)
  ****************************************************/
 
 const CONFIG = {
@@ -18,7 +24,7 @@ const CONFIG = {
   GLOBAL_HISTORY_SHEET: 'Global_History',
   ALERT_HISTORY_SHEET: 'Alert_History',
   CACHE_TIME: 300000, // 5분 캐시
-  
+
   // 미국 지표
   FRED_IDS: {
     SOFR: 'SOFRINDEX',
@@ -26,7 +32,11 @@ const CONFIG = {
     IORB: 'IORB',
     ON_RRP: 'RRPONTSYD',
     TGA: 'WTREGEN',
-    WALCL: 'WALCL'
+    WALCL: 'WALCL',
+    // v4.0: Fed 정책 추적용 추가 지표
+    FED_FUNDS_UPPER: 'DFEDTARU',   // Fed Funds Target Upper Bound
+    FED_FUNDS_LOWER: 'DFEDTARL',   // Fed Funds Target Lower Bound
+    RESERVE_BALANCES: 'WRESBAL'    // Reserve Balances with Fed
   },
   
   // 글로벌 지표
@@ -479,6 +489,428 @@ function checkDebtCeilingRisk(tga_balance) {
 }
 
 /** ===============================================
+ * 5-B) Fed 정책 추적 (v4.0 신규)
+ * =============================================== */
+
+/**
+ * QT/QE 상태 감지
+ * WALCL 월간 변화로 QT/QE 상태 판단
+ * @returns {Object} QT/QE 상태 및 점수
+ */
+function getQTStatus() {
+  try {
+    const walcl = getFredData(CONFIG.FRED_IDS.WALCL, false);
+    const walcl_1m = getFredDataHistorical(CONFIG.FRED_IDS.WALCL, 30);
+
+    const current = walcl.value || 0;
+    const monthAgo = walcl_1m.value || current;
+    const monthChange = current - monthAgo;
+
+    let status = 'NEUTRAL';
+    let score = 0;
+    let signal = '⚖️ 중립';
+
+    if (monthChange > 50000) {        // $50B 이상 증가 (QE/RMP)
+      status = 'QE';
+      score = 30;
+      signal = '🚀 QE/RMP 진행';
+    } else if (monthChange > 10000) {  // $10B 이상 증가
+      status = 'MILD_QE';
+      score = 15;
+      signal = '✅ 완화적';
+    } else if (monthChange < -50000) { // $50B 이상 감소 (적극적 QT)
+      status = 'AGGRESSIVE_QT';
+      score = -25;
+      signal = '🔴 적극적 QT';
+    } else if (monthChange < -10000) { // $10B 이상 감소
+      status = 'QT';
+      score = -15;
+      signal = '⚠️ QT 진행';
+    }
+
+    Logger.log(`✅ QT Status: ${status}, 월간변화: ${monthChange}M$`);
+
+    return {
+      status: status,
+      score: score,
+      signal: signal,
+      monthChange: monthChange,
+      current: current
+    };
+
+  } catch (e) {
+    Logger.log(`❌ QT Status 오류: ${e.message}`);
+    return { status: 'UNKNOWN', score: 0, signal: 'NO DATA', monthChange: 0 };
+  }
+}
+
+/**
+ * 금리 사이클 감지
+ * Fed 기준금리 변화로 완화/긴축 사이클 판단
+ * @returns {Object} 금리 사이클 상태 및 점수
+ */
+function getRateCycleStatus() {
+  try {
+    const cache = CacheService.getScriptCache();
+    const cacheKey = 'RATE_CYCLE_STATUS';
+
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+
+    // Fed Funds Target Rate (Upper Bound)
+    const rateNow = getFredData(CONFIG.FRED_IDS.FED_FUNDS_UPPER, false);
+    const rate1m = getFredDataHistorical(CONFIG.FRED_IDS.FED_FUNDS_UPPER, 30);
+    const rate3m = getFredDataHistorical(CONFIG.FRED_IDS.FED_FUNDS_UPPER, 90);
+
+    const current = rateNow.value || 0;
+    const monthAgo = rate1m.value || current;
+    const quarterAgo = rate3m.value || current;
+
+    // 변화량 (bp 단위로 환산)
+    const change1m = (current - monthAgo) * 100;
+    const change3m = (current - quarterAgo) * 100;
+
+    let cycle = 'STABLE';
+    let score = 0;
+    let signal = '⚖️ 금리 동결';
+
+    if (change3m <= -75) {          // 3개월간 75bp 이상 인하
+      cycle = 'AGGRESSIVE_CUTTING';
+      score = 30;
+      signal = '🚀 적극적 완화';
+    } else if (change3m <= -25) {   // 3개월간 25bp 이상 인하
+      cycle = 'CUTTING';
+      score = 20;
+      signal = '✅ 완화 사이클';
+    } else if (change1m < 0) {      // 1개월간 인하
+      cycle = 'MILD_CUTTING';
+      score = 10;
+      signal = '✅ 완화 시작';
+    } else if (change3m >= 75) {    // 3개월간 75bp 이상 인상
+      cycle = 'AGGRESSIVE_HIKING';
+      score = -25;
+      signal = '🔴 적극적 긴축';
+    } else if (change3m >= 25) {    // 3개월간 25bp 이상 인상
+      cycle = 'HIKING';
+      score = -15;
+      signal = '⚠️ 긴축 사이클';
+    }
+
+    const result = {
+      cycle: cycle,
+      score: score,
+      signal: signal,
+      currentRate: current,
+      change1m: change1m,
+      change3m: change3m
+    };
+
+    cache.put(cacheKey, JSON.stringify(result), 3600); // 1시간 캐시
+    Logger.log(`✅ Rate Cycle: ${cycle}, 현재금리: ${current}%, 3개월변화: ${change3m}bp`);
+
+    return result;
+
+  } catch (e) {
+    Logger.log(`❌ Rate Cycle 오류: ${e.message}`);
+    return { cycle: 'UNKNOWN', score: 0, signal: 'NO DATA', currentRate: 0 };
+  }
+}
+
+/**
+ * Reserve Balances 상태 확인
+ * 은행 준비금 수준으로 유동성 상태 판단
+ * @returns {Object} Reserve 상태 및 점수
+ */
+function getReserveBalancesStatus() {
+  try {
+    const reserves = getFredData(CONFIG.FRED_IDS.RESERVE_BALANCES, false);
+    const reserves_1m = getFredDataHistorical(CONFIG.FRED_IDS.RESERVE_BALANCES, 30);
+
+    const current = reserves.value || 0;
+    const monthAgo = reserves_1m.value || current;
+    const monthChange = current - monthAgo;
+
+    // 임계값 (millions)
+    const AMPLE_THRESHOLD = 2900000;    // $2.9T (ample threshold)
+    const ABUNDANT_THRESHOLD = 3400000; // $3.4T (abundant)
+    const SCARCE_THRESHOLD = 2500000;   // $2.5T (scarce)
+
+    let status = 'AMPLE';
+    let score = 0;
+    let signal = '⚖️ Ample 범위';
+
+    if (current < SCARCE_THRESHOLD) {
+      status = 'SCARCE';
+      score = -20;
+      signal = '🔴 준비금 부족';
+    } else if (current < AMPLE_THRESHOLD) {
+      status = 'APPROACHING_SCARCE';
+      score = -10;
+      signal = '⚠️ 준비금 부족 우려';
+    } else if (current > ABUNDANT_THRESHOLD) {
+      status = 'ABUNDANT';
+      score = 10;
+      signal = '✅ 충분한 유동성';
+    }
+
+    // 추세 보정
+    if (monthChange < -100000) {       // 월 $100B 이상 감소
+      score -= 5;
+      signal += ' (급감 중)';
+    } else if (monthChange > 100000) { // 월 $100B 이상 증가
+      score += 5;
+      signal += ' (증가 중)';
+    }
+
+    Logger.log(`✅ Reserve Balances: ${(current/1000000).toFixed(2)}T, Status: ${status}`);
+
+    return {
+      status: status,
+      score: score,
+      signal: signal,
+      current: current,
+      monthChange: monthChange,
+      currentTrillion: (current / 1000000).toFixed(2)
+    };
+
+  } catch (e) {
+    Logger.log(`❌ Reserve Balances 오류: ${e.message}`);
+    return { status: 'UNKNOWN', score: 0, signal: 'NO DATA', current: 0 };
+  }
+}
+
+/**
+ * Repo 스프레드 분석
+ * SOFR-IORB 스프레드로 유동성 긴장 감지
+ * @returns {Object} Repo 스프레드 상태 및 점수
+ */
+function getRepoSpreadStatus() {
+  try {
+    const sofr = getFredData(CONFIG.FRED_IDS.SOFR, false);
+    const iorb = getFredData(CONFIG.FRED_IDS.IORB, false);
+
+    const sofrRate = sofr.value || 0;
+    const iorbRate = iorb.value || 0;
+    const spread = (sofrRate - iorbRate) * 100; // bp 단위
+
+    let status = 'NORMAL';
+    let score = 0;
+    let signal = '✅ 정상';
+
+    if (spread > 15) {              // 15bp 초과 (긴장)
+      status = 'TIGHT';
+      score = -15;
+      signal = '🔴 유동성 긴장';
+    } else if (spread > 5) {        // 5-15bp (주의)
+      status = 'ELEVATED';
+      score = -5;
+      signal = '⚠️ 스프레드 확대';
+    } else if (spread < -5) {       // -5bp 미만 (과잉)
+      status = 'EXCESS';
+      score = 5;
+      signal = '✅ 유동성 충분';
+    }
+
+    Logger.log(`✅ Repo Spread: ${spread.toFixed(1)}bp (SOFR: ${sofrRate}%, IORB: ${iorbRate}%)`);
+
+    return {
+      status: status,
+      score: score,
+      signal: signal,
+      spread: spread,
+      sofr: sofrRate,
+      iorb: iorbRate
+    };
+
+  } catch (e) {
+    Logger.log(`❌ Repo Spread 오류: ${e.message}`);
+    return { status: 'UNKNOWN', score: 0, signal: 'NO DATA', spread: 0 };
+  }
+}
+
+/**
+ * 시장 국면 감지 (동적 가중치용)
+ * DXY 변동성, Fed 정책 상태 기반으로 시장 국면 판단
+ * @returns {Object} 시장 국면 및 가중치
+ */
+function detectMarketRegime() {
+  try {
+    // DXY 변동성 계산 (최근 30일 변화)
+    const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY, false);
+    const dxy_1m = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 30);
+    const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
+
+    const dxyChange1w = Math.abs((dxy.value || 100) - (dxy_1w.value || 100));
+    const dxyChange1m = Math.abs((dxy.value || 100) - (dxy_1m.value || 100));
+
+    // Fed 정책 상태
+    const rateCycle = getRateCycleStatus();
+    const qtStatus = getQTStatus();
+
+    const fedCutting = rateCycle.cycle.includes('CUTTING');
+    const qtEnded = qtStatus.status === 'QE' || qtStatus.status === 'MILD_QE' || qtStatus.status === 'NEUTRAL';
+
+    let regime = 'NORMAL';
+    let weights = {
+      US: 0.40,
+      DXY: 0.20,
+      China: 0.20,
+      Japan: 0.10,
+      EM: 0.10
+    };
+
+    // 국면 판단 로직
+    if (dxyChange1w > 2 || dxyChange1m > 5) {
+      // DXY 고변동성 국면: DXY 영향력 증가
+      regime = 'DXY_VOLATILE';
+      weights = {
+        US: 0.25,
+        DXY: 0.35,
+        China: 0.20,
+        Japan: 0.10,
+        EM: 0.10
+      };
+    } else if (fedCutting && qtEnded) {
+      // Fed 적극 완화 국면: 미국 요인 지배
+      regime = 'FED_EASING';
+      weights = {
+        US: 0.50,
+        DXY: 0.10,
+        China: 0.20,
+        Japan: 0.10,
+        EM: 0.10
+      };
+    } else if (fedCutting) {
+      // 금리 인하 사이클: 미국 요인 강화
+      regime = 'RATE_CUTTING';
+      weights = {
+        US: 0.45,
+        DXY: 0.15,
+        China: 0.20,
+        Japan: 0.10,
+        EM: 0.10
+      };
+    }
+
+    Logger.log(`✅ Market Regime: ${regime}, DXY 변동성: 1w ${dxyChange1w.toFixed(2)}, 1m ${dxyChange1m.toFixed(2)}`);
+
+    return {
+      regime: regime,
+      weights: weights,
+      dxyVolatility1w: dxyChange1w,
+      dxyVolatility1m: dxyChange1m,
+      fedCutting: fedCutting,
+      qtEnded: qtEnded
+    };
+
+  } catch (e) {
+    Logger.log(`❌ Market Regime 오류: ${e.message}`);
+    return {
+      regime: 'NORMAL',
+      weights: { US: 0.40, DXY: 0.20, China: 0.20, Japan: 0.10, EM: 0.10 }
+    };
+  }
+}
+
+/**
+ * 맥락 기반 DXY 스코어링
+ * Fed 정책 상태에 따라 DXY 변화 해석
+ * @param {number} dxyChange - DXY 주간 변화
+ * @returns {Object} 맥락 기반 점수
+ */
+function getContextualDXYScore(dxyChange) {
+  const rateCycle = getRateCycleStatus();
+  const fedCutting = rateCycle.cycle.includes('CUTTING');
+
+  let score = 0;
+  let interpretation = '';
+
+  if (fedCutting) {
+    // Fed 완화 중: DXY 하락 = 글로벌 유동성 증가 = 긍정적
+    if (dxyChange < -2) {
+      score = 25;
+      interpretation = '🚀 달러 약세 + Fed 완화 = 강한 Risk-ON';
+    } else if (dxyChange < -1) {
+      score = 20;
+      interpretation = '✅ 달러 약세 + Fed 완화 = Risk-ON';
+    } else if (dxyChange < 0) {
+      score = 10;
+      interpretation = '✅ 약한 달러 약세 (긍정적)';
+    } else if (dxyChange < 1) {
+      score = 0;
+      interpretation = '⚖️ 달러 안정';
+    } else if (dxyChange < 2) {
+      score = -10;
+      interpretation = '⚠️ Fed 완화에도 달러 강세';
+    } else {
+      score = -15;
+      interpretation = '🔴 비정상적 달러 강세 (경계)';
+    }
+  } else {
+    // Fed 동결/긴축 중: 고변동성이 리스크
+    if (Math.abs(dxyChange) > 2) {
+      score = -15;
+      interpretation = '🔴 달러 고변동성 (불안정)';
+    } else if (Math.abs(dxyChange) > 1) {
+      score = -5;
+      interpretation = '⚠️ 달러 변동성';
+    } else {
+      score = 0;
+      interpretation = '⚖️ 달러 안정';
+    }
+  }
+
+  return {
+    score: score,
+    interpretation: interpretation,
+    dxyChange: dxyChange,
+    fedContext: fedCutting ? 'EASING' : 'NEUTRAL_OR_TIGHTENING'
+  };
+}
+
+/**
+ * 종합 Fed 정책 분석
+ * QT/QE, 금리 사이클, Reserve, Repo 스프레드 통합
+ * @returns {Object} 종합 Fed 정책 점수 및 상태
+ */
+function analyzeFedPolicy() {
+  const qtStatus = getQTStatus();
+  const rateCycle = getRateCycleStatus();
+  const reserves = getReserveBalancesStatus();
+  const repoSpread = getRepoSpreadStatus();
+
+  // 종합 점수 (최대 +60, 최소 -60)
+  const totalScore = qtStatus.score + rateCycle.score + reserves.score + repoSpread.score;
+
+  // 종합 신호
+  let overallSignal = '⚖️ 중립';
+  if (totalScore >= 40) {
+    overallSignal = '🚀 강한 완화';
+  } else if (totalScore >= 20) {
+    overallSignal = '✅ 완화적';
+  } else if (totalScore <= -40) {
+    overallSignal = '🔴 강한 긴축';
+  } else if (totalScore <= -20) {
+    overallSignal = '⚠️ 긴축적';
+  }
+
+  Logger.log(`✅ Fed Policy Analysis: Total Score ${totalScore}, ${overallSignal}`);
+
+  return {
+    totalScore: totalScore,
+    overallSignal: overallSignal,
+    components: {
+      qtStatus: qtStatus,
+      rateCycle: rateCycle,
+      reserves: reserves,
+      repoSpread: repoSpread
+    }
+  };
+}
+
+/** ===============================================
  * 6) 신흥국 통화 모니터링
  * =============================================== */
 
@@ -528,127 +960,127 @@ function analyzeGlobalLiquidity() {
   try {
     const ss = SpreadsheetApp.getActive();
     let globalSheet = ss.getSheetByName(CONFIG.GLOBAL_SHEET);
-    
+
     if (!globalSheet) {
       globalSheet = ss.insertSheet(CONFIG.GLOBAL_SHEET);
       setupGlobalSheet(globalSheet);
     }
-    
+
+    // ============= v4.0: 시장 국면 및 동적 가중치 감지 =============
+    const marketRegime = detectMarketRegime();
+    const fedPolicy = analyzeFedPolicy();
+
     // 데이터 수집
     const walcl = getFredData(CONFIG.FRED_IDS.WALCL);
     const walcl_1w = getFredDataHistorical(CONFIG.FRED_IDS.WALCL, 7);
     const tga = getTGAAnalysis();
     const onRrp = getFredData(CONFIG.FRED_IDS.ON_RRP);
-    
+
     const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY);
     const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
     const dxy_change = (dxy.value || 100) - (dxy_1w.value || 100);
-    
+
     const china = getChinaLiquidity();
     const japan = getJapanLiquidity();
     const emFx = getEmergingMarketsFX();
-    
+
     // WoW 계산
     const walcl_wow = (walcl.value || 0) - (walcl_1w.value || 0);
-    
-    // 종합 유동성 점수 계산 (개선된 세밀한 로직)
-    let liquidityScore = 0;
 
-    // === 미국 요인 (40%) ===
+    // ============= 요인별 원점수 계산 =============
+    let usScore = 0;
+    let dxyScore = 0;
+    let chinaScore = 0;
+    let japanScore = 0;
+    let emScore = 0;
+
+    // === 미국 요인 ===
 
     // 1. WALCL WoW (양방향 5단계 점수)
-    if (walcl_wow > 50000) {              // 500억 이상 증가
-      liquidityScore += 20;
-    } else if (walcl_wow > 10000) {       // 100억~500억 증가
-      liquidityScore += 10;
-    } else if (walcl_wow < -50000) {      // 500억 이상 감소 (강한 QT)
-      liquidityScore -= 20;
-    } else if (walcl_wow < -10000) {      // 100억~500억 감소
-      liquidityScore -= 10;
+    if (walcl_wow > 50000) {
+      usScore += 20;
+    } else if (walcl_wow > 10000) {
+      usScore += 10;
+    } else if (walcl_wow < -50000) {
+      usScore -= 20;
+    } else if (walcl_wow < -10000) {
+      usScore -= 10;
     }
-    // -10B ~ +10B는 중립 (0점)
 
     // 2. TGA 변화 (양방향 5단계 점수)
-    if (tga.week_change < -100000) {      // 1000억 이상 지출 (강한 유동성 공급)
-      liquidityScore += 10;
-    } else if (tga.week_change < -50000) { // 500억~1000억 지출
-      liquidityScore += 5;
-    } else if (tga.week_change > 100000) { // 1000억 이상 축적 (강한 유동성 흡수)
-      liquidityScore -= 10;
-    } else if (tga.week_change > 50000) {  // 500억~1000억 축적
-      liquidityScore -= 5;
+    if (tga.week_change < -100000) {
+      usScore += 10;
+    } else if (tga.week_change < -50000) {
+      usScore += 5;
+    } else if (tga.week_change > 100000) {
+      usScore -= 10;
+    } else if (tga.week_change > 50000) {
+      usScore -= 5;
     }
-    // -50B ~ +50B는 중립 (0점)
 
     // 3. ON RRP (5단계 점수)
-    if (onRrp.value > 500000) {           // 5000억 초과 = 극도의 과잉
-      liquidityScore -= 15;
-    } else if (onRrp.value > 300000) {    // 3000억~5000억 = 과잉 유동성 (리스크)
-      liquidityScore -= 10;
-    } else if (onRrp.value > 200000) {    // 2000억~3000억 = 중립
-      liquidityScore += 0;
-    } else if (onRrp.value > 100000) {    // 1000억~2000억 = 적정 활용
-      liquidityScore += 5;
-    } else {                               // 1000억 미만 = 완전 활용
-      liquidityScore += 10;
+    if (onRrp.value > 500000) {
+      usScore -= 15;
+    } else if (onRrp.value > 300000) {
+      usScore -= 10;
+    } else if (onRrp.value > 200000) {
+      usScore += 0;
+    } else if (onRrp.value > 100000) {
+      usScore += 5;
+    } else {
+      usScore += 10;
     }
 
-    // === 달러 요인 (20%) ===
+    // 4. v4.0: Fed 정책 점수 추가 (동적 가중치 시 비중 증가)
+    usScore += fedPolicy.totalScore * 0.5; // Fed 정책의 50%를 US 점수에 반영
 
-    // DXY WoW (5단계 점수)
-    if (dxy_change < -2) {                // 2포인트 이상 하락 (Risk-ON)
-      liquidityScore += 25;
-    } else if (dxy_change < -1) {         // 1~2포인트 하락
-      liquidityScore += 20;
-    } else if (dxy_change > 2) {          // 2포인트 이상 상승 (Risk-OFF)
-      liquidityScore -= 25;
-    } else if (dxy_change > 1) {          // 1~2포인트 상승
-      liquidityScore -= 20;
+    // === 달러 요인 (v4.0: 맥락 기반 스코어링) ===
+    const contextualDxy = getContextualDXYScore(dxy_change);
+    dxyScore = contextualDxy.score;
+
+    // === 중국 요인 ===
+    if (china.m2_growth > 12) {
+      chinaScore += 20;
+    } else if (china.m2_growth > 10) {
+      chinaScore += 15;
+    } else if (china.m2_growth < 6) {
+      chinaScore -= 20;
+    } else if (china.m2_growth < 8) {
+      chinaScore -= 10;
     }
-    // -1 ~ +1은 중립 (0점)
 
-    // === 중국 요인 (20%) ===
-
-    // M2 YoY (5단계 점수)
-    if (china.m2_growth > 12) {           // 12% 초과 = 과잉 확대
-      liquidityScore += 20;
-    } else if (china.m2_growth > 10) {    // 10~12% = 적정 확대
-      liquidityScore += 15;
-    } else if (china.m2_growth < 6) {     // 6% 미만 = 경색
-      liquidityScore -= 20;
-    } else if (china.m2_growth < 8) {     // 6~8% = 둔화
-      liquidityScore -= 10;
+    // === 일본 요인 ===
+    if (japan.usdjpy > 155) {
+      japanScore -= 15;
+    } else if (japan.usdjpy > 150) {
+      japanScore -= 10;
+    } else if (japan.usdjpy > 145) {
+      japanScore -= 5;
+    } else if (japan.usdjpy < 130) {
+      japanScore += 5;
     }
-    // 8~10%는 중립 (0점)
 
-    // === 일본 요인 (10%) ===
-
-    // USD/JPY (5단계 점수)
-    if (japan.usdjpy > 155) {             // 155 초과 = 극도의 캐리 리스크
-      liquidityScore -= 15;
-    } else if (japan.usdjpy > 150) {      // 150~155 = 고위험
-      liquidityScore -= 10;
-    } else if (japan.usdjpy > 145) {      // 145~150 = 주의
-      liquidityScore -= 5;
-    } else if (japan.usdjpy < 130) {      // 130 미만 = 언와인드 완료 (약한 호재)
-      liquidityScore += 5;
+    // === 신흥국 요인 ===
+    if (emFx.strength_index > 2) {
+      emScore += 15;
+    } else if (emFx.strength_index > 1) {
+      emScore += 10;
+    } else if (emFx.strength_index < -2) {
+      emScore -= 15;
+    } else if (emFx.strength_index < -1) {
+      emScore -= 10;
     }
-    // 130~145는 안정 (0점)
 
-    // === 신흥국 요인 (10%) ===
+    // ============= v4.0: 동적 가중치 적용 =============
+    const weights = marketRegime.weights;
+    let liquidityScore = Math.round(
+      usScore * (weights.US / 0.40) +       // US 기본 40% 대비 조정
+      dxyScore * (weights.DXY / 0.20) +     // DXY 기본 20% 대비 조정
+      chinaScore * (weights.China / 0.20) + // China 기본 20% 대비 조정
+      japanScore * (weights.Japan / 0.10) + // Japan 기본 10% 대비 조정
+      emScore * (weights.EM / 0.10)         // EM 기본 10% 대비 조정
+    );
 
-    // EM 강세 지수 (5단계 점수)
-    if (emFx.strength_index > 2) {        // 2 초과 = 강한 강세
-      liquidityScore += 15;
-    } else if (emFx.strength_index > 1) { // 1~2 = 약한 강세
-      liquidityScore += 10;
-    } else if (emFx.strength_index < -2) { // -2 미만 = 강한 약세
-      liquidityScore -= 15;
-    } else if (emFx.strength_index < -1) { // -2 ~ -1 = 약한 약세
-      liquidityScore -= 10;
-    }
-    // -1 ~ +1은 중립 (0점)
-    
     // 최종 신호 결정 (7단계 확장 범위)
     let finalSignal = '';
     let recommendation = '';
@@ -675,10 +1107,10 @@ function analyzeGlobalLiquidity() {
       finalSignal = '🔴🔴 CRISIS MODE';
       recommendation = '현금 확보, 손절 고려, 변동성 헤지 필수';
     }
-    
+
     // Global_Liquidity 시트 업데이트
     const timestamp = new Date().toLocaleString('ko-KR', {timeZone: 'Asia/Seoul'});
-    
+
     globalSheet.getRange(2, 1, 1, 19).setValues([[
       timestamp,
       walcl.value,
@@ -700,44 +1132,59 @@ function analyzeGlobalLiquidity() {
       liquidityScore,
       finalSignal
     ]]);
-    
+
     // 추천사항 업데이트
     globalSheet.getRange('T2').setValue(recommendation);
-    
+
+    // v4.0: 시장 국면 표시 (U2 셀)
+    globalSheet.getRange('U2').setValue(`[${marketRegime.regime}] ${fedPolicy.overallSignal}`);
+
     // 조건부 서식 (7단계)
     const signalCell = globalSheet.getRange('S2');
     if (liquidityScore >= 80) {
-      signalCell.setBackground('#00FF00').setFontWeight('bold');  // 밝은 초록 (슈퍼)
+      signalCell.setBackground('#00FF00').setFontWeight('bold');
     } else if (liquidityScore >= 50) {
-      signalCell.setBackground('#90EE90');  // 연한 초록 (극도)
+      signalCell.setBackground('#90EE90');
     } else if (liquidityScore >= 20) {
-      signalCell.setBackground('#D4EDDA');  // 매우 연한 초록 (높음)
+      signalCell.setBackground('#D4EDDA');
     } else if (liquidityScore >= -20) {
-      signalCell.setBackground('#FFFFE0');  // 노랑 (중립)
+      signalCell.setBackground('#FFFFE0');
     } else if (liquidityScore >= -50) {
-      signalCell.setBackground('#FFE4B5');  // 주황 (긴축)
+      signalCell.setBackground('#FFE4B5');
     } else if (liquidityScore >= -80) {
-      signalCell.setBackground('#FFB6C1');  // 분홍 (극도 긴축)
+      signalCell.setBackground('#FFB6C1');
     } else {
-      signalCell.setBackground('#FF6B6B').setFontWeight('bold');  // 빨강 (위기)
+      signalCell.setBackground('#FF6B6B').setFontWeight('bold');
     }
-    
+
     Logger.log(`✅ 글로벌 유동성 분석 완료: Score ${liquidityScore}, ${finalSignal}`);
-    
+    Logger.log(`   Market Regime: ${marketRegime.regime}, Fed Policy: ${fedPolicy.overallSignal}`);
+    Logger.log(`   Weights - US:${(weights.US*100).toFixed(0)}% DXY:${(weights.DXY*100).toFixed(0)}% China:${(weights.China*100).toFixed(0)}%`);
+
     return {
       score: liquidityScore,
       signal: finalSignal,
       recommendation: recommendation,
       timestamp: new Date(),
+      regime: marketRegime.regime,
+      fedPolicy: fedPolicy,
+      weights: weights,
+      componentScores: {
+        us: usScore,
+        dxy: dxyScore,
+        china: chinaScore,
+        japan: japanScore,
+        em: emScore
+      },
       details: {
         us: { walcl: walcl.value, walcl_wow: walcl_wow, tga: tga, onrrp: onRrp.value },
-        dxy: { level: dxy.value, change: dxy_change },
+        dxy: { level: dxy.value, change: dxy_change, contextual: contextualDxy },
         china: china,
         japan: japan,
         em: emFx
       }
     };
-    
+
   } catch (e) {
     Logger.log(`❌ 글로벌 유동성 분석 오류: ${e.message}`);
     SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
@@ -747,25 +1194,26 @@ function analyzeGlobalLiquidity() {
 
 function setupGlobalSheet(sheet) {
   const headers = [
-    '타임스탬프', 
-    'WALCL(M$)', 'WALCL WoW', 
-    'TGA(M$)', 'TGA WoW', 
+    '타임스탬프',
+    'WALCL(M$)', 'WALCL WoW',
+    'TGA(M$)', 'TGA WoW',
     'ON RRP(M$)',
     'DXY', 'DXY WoW',
     '중국 M2(%)', '중국 신용', '중국 FX',
     'USD/JPY', 'JGB 10Y', 'US-JP 스프레드',
     'USD/KRW', 'USD/BRL', 'EM 강세지수',
-    '유동성 점수', '신호', '투자 권장'
+    '유동성 점수', '신호', '투자 권장',
+    '시장 국면'  // v4.0: 시장 국면 및 Fed 정책 상태
   ];
-  
+
   sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
   sheet.getRange(1, 1, 1, headers.length)
     .setFontWeight('bold')
     .setBackground('#1f77b4')
     .setFontColor('white');
-  
+
   sheet.autoResizeColumns(1, headers.length);
-  
+
   Logger.log('✅ Global_Liquidity 시트 설정 완료');
 }
 
@@ -1570,6 +2018,19 @@ function checkGlobalAlerts() {
 
     const alerts = [];
 
+    // v4.0: 추세 기반 알림을 위한 히스토리 비교
+    const comparison = getHistoryComparison();
+    let momentum = 0;
+    let trend = 0;
+
+    if (comparison && comparison.score) {
+      momentum = analysis.score - (comparison.score.prev || 0);
+      // 30일 추세 계산을 위해 7일 전 데이터 활용 (대략적)
+      trend = analysis.score - (comparison.score.prev || 0);
+    }
+
+    // === 레벨 기반 알림 (기존) ===
+
     // 극단적 신호 (업데이트된 기준)
     if (analysis.score >= 80) {
       alerts.push({
@@ -1596,7 +2057,80 @@ function checkGlobalAlerts() {
         action: analysis.recommendation
       });
     }
-    
+
+    // === v4.0: 추세/모멘텀 기반 알림 (신규) ===
+
+    // 급격한 모멘텀 변화 감지
+    if (momentum > 20) {
+      alerts.push({
+        level: '📈 MOMENTUM SURGE',
+        message: `유동성 급증: 점수 +${momentum.toFixed(0)}pt 상승`,
+        action: '강한 매수 신호 - Risk-ON 포지션 확대 검토'
+      });
+    } else if (momentum < -20) {
+      alerts.push({
+        level: '📉 MOMENTUM DROP',
+        message: `유동성 급감: 점수 ${momentum.toFixed(0)}pt 하락`,
+        action: '방어적 전환 검토 - 포지션 축소 고려'
+      });
+    }
+
+    // 추세 전환 감지 (긍정적 추세 중 모멘텀 둔화)
+    if (trend > 0 && momentum < -10 && analysis.score > 0) {
+      alerts.push({
+        level: '⚠️ TREND SLOWDOWN',
+        message: '유동성 모멘텀 둔화 - 경계 구간 진입',
+        action: '포지션 유지하되 신규 매수 자제'
+      });
+    }
+
+    // 추세 전환 감지 (부정적 추세 중 반등 신호)
+    if (trend < 0 && momentum > 10 && analysis.score < 0) {
+      alerts.push({
+        level: '💡 TREND REVERSAL',
+        message: '유동성 반등 시작 가능성',
+        action: '바닥 신호 주시 - 분할 매수 검토'
+      });
+    }
+
+    // === v4.0: Fed 정책 전환 알림 (신규) ===
+
+    if (analysis.fedPolicy) {
+      const fedScore = analysis.fedPolicy.totalScore;
+
+      if (fedScore >= 40) {
+        alerts.push({
+          level: '🏦 FED EASING',
+          message: `Fed 강한 완화 신호 (정책점수: +${fedScore})`,
+          action: '위험자산 비중 확대 적기'
+        });
+      } else if (fedScore <= -40) {
+        alerts.push({
+          level: '🏦 FED TIGHTENING',
+          message: `Fed 강한 긴축 신호 (정책점수: ${fedScore})`,
+          action: '방어적 포지션 전환 권장'
+        });
+      }
+    }
+
+    // === v4.0: 시장 국면 전환 알림 (신규) ===
+
+    if (analysis.regime === 'DXY_VOLATILE') {
+      alerts.push({
+        level: '💵 REGIME: DXY VOLATILE',
+        message: 'DXY 고변동성 국면 - 가중치 조정됨',
+        action: '달러 움직임 주시, EM 노출 관리'
+      });
+    } else if (analysis.regime === 'FED_EASING') {
+      alerts.push({
+        level: '🏦 REGIME: FED EASING',
+        message: 'Fed 적극 완화 국면 - 미국 요인 지배적',
+        action: 'Fed 정책에 민감한 자산 선호'
+      });
+    }
+
+    // === 기존 개별 리스크 알림 ===
+
     // 중국 리스크
     if (analysis.details.china.m2_growth < 7) {
       alerts.push({
@@ -1605,7 +2139,7 @@ function checkGlobalAlerts() {
         action: '신흥국/원자재 노출 축소'
       });
     }
-    
+
     // 엔캐리 리스크
     if (analysis.details.japan.usdjpy > 155) {
       alerts.push({
@@ -1614,7 +2148,7 @@ function checkGlobalAlerts() {
         action: '변동성 헤지'
       });
     }
-    
+
     // 달러 급변
     if (Math.abs(analysis.details.dxy.change) > 2) {
       alerts.push({
@@ -1623,14 +2157,14 @@ function checkGlobalAlerts() {
         action: analysis.details.dxy.change > 0 ? 'Risk-OFF 준비' : 'Risk-ON 기회'
       });
     }
-    
+
     if (alerts.length > 0) {
-      // History에서 이전 데이터와 비교
-      const comparison = getHistoryComparison();
       sendGlobalAlert(alerts, analysis, comparison);
       logAlertHistory(alerts, analysis);
     }
-    
+
+    Logger.log(`✅ 알림 체크 완료: ${alerts.length}개 알림 발생`);
+
   } catch (e) {
     Logger.log(`❌ 알림 체크 오류: ${e.message}`);
   }
@@ -1892,17 +2426,98 @@ function checkDXYTrend() {
   const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY);
   const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
   const dxy_1m = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 30);
-  
+
   const weekChange = (dxy.value - dxy_1w.value).toFixed(2);
   const monthChange = (dxy.value - dxy_1m.value).toFixed(2);
-  
+
+  // v4.0: 맥락 기반 DXY 해석 추가
+  const contextualDxy = getContextualDXYScore(parseFloat(weekChange));
+
   SpreadsheetApp.getUi().alert(
     `💵 달러 인덱스 (DXY) 추세\n\n` +
     `현재: ${dxy.value.toFixed(2)}\n` +
     `주간 변화: ${weekChange > 0 ? '+' : ''}${weekChange}\n` +
     `월간 변화: ${monthChange > 0 ? '+' : ''}${monthChange}\n\n` +
-    `${Math.abs(weekChange) > 2 ? '⚠️ 급격한 변동 주의' : '✅ 정상 범위'}`
+    `맥락 해석: ${contextualDxy.interpretation}\n` +
+    `(Fed 상태: ${contextualDxy.fedContext})`
   );
+}
+
+/**
+ * v4.0: Fed 정책 상세 체크
+ * QT/QE 상태, 금리 사이클, Reserve Balances, Repo 스프레드 분석
+ */
+function checkFedPolicy() {
+  try {
+    const fedPolicy = analyzeFedPolicy();
+    const qt = fedPolicy.components.qtStatus;
+    const rate = fedPolicy.components.rateCycle;
+    const reserves = fedPolicy.components.reserves;
+    const repo = fedPolicy.components.repoSpread;
+
+    const message =
+      `🏦 Fed 정책 분석 (v4.0)\n\n` +
+      `=== 종합 점수: ${fedPolicy.totalScore} ===\n` +
+      `신호: ${fedPolicy.overallSignal}\n\n` +
+      `--- QT/QE 상태 ---\n` +
+      `상태: ${qt.status} (${qt.signal})\n` +
+      `월간 WALCL 변화: ${(qt.monthChange/1000).toFixed(0)}B$\n` +
+      `점수 기여: ${qt.score > 0 ? '+' : ''}${qt.score}\n\n` +
+      `--- 금리 사이클 ---\n` +
+      `사이클: ${rate.cycle} (${rate.signal})\n` +
+      `현재 금리: ${rate.currentRate}%\n` +
+      `3개월 변화: ${rate.change3m}bp\n` +
+      `점수 기여: ${rate.score > 0 ? '+' : ''}${rate.score}\n\n` +
+      `--- Reserve Balances ---\n` +
+      `상태: ${reserves.status} (${reserves.signal})\n` +
+      `현재: ${reserves.currentTrillion}T$\n` +
+      `점수 기여: ${reserves.score > 0 ? '+' : ''}${reserves.score}\n\n` +
+      `--- Repo 스프레드 ---\n` +
+      `상태: ${repo.status} (${repo.signal})\n` +
+      `SOFR-IORB: ${repo.spread.toFixed(1)}bp\n` +
+      `점수 기여: ${repo.score > 0 ? '+' : ''}${repo.score}`;
+
+    SpreadsheetApp.getUi().alert(message);
+    Logger.log('✅ Fed 정책 체크 완료');
+
+  } catch (e) {
+    Logger.log(`❌ Fed 정책 체크 오류: ${e.message}`);
+    SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
+  }
+}
+
+/**
+ * v4.0: 시장 국면 체크
+ * 현재 시장 국면 및 동적 가중치 표시
+ */
+function checkMarketRegime() {
+  try {
+    const regime = detectMarketRegime();
+    const weights = regime.weights;
+
+    const message =
+      `📊 시장 국면 분석 (v4.0)\n\n` +
+      `=== 현재 국면: ${regime.regime} ===\n\n` +
+      `--- DXY 변동성 ---\n` +
+      `1주일: ${regime.dxyVolatility1w.toFixed(2)}pt\n` +
+      `1개월: ${regime.dxyVolatility1m.toFixed(2)}pt\n\n` +
+      `--- Fed 상태 ---\n` +
+      `금리 인하 중: ${regime.fedCutting ? '✅ 예' : '❌ 아니오'}\n` +
+      `QT 종료: ${regime.qtEnded ? '✅ 예' : '❌ 아니오'}\n\n` +
+      `--- 동적 가중치 ---\n` +
+      `미국 요인: ${(weights.US * 100).toFixed(0)}% (기본 40%)\n` +
+      `DXY 요인: ${(weights.DXY * 100).toFixed(0)}% (기본 20%)\n` +
+      `중국 요인: ${(weights.China * 100).toFixed(0)}% (기본 20%)\n` +
+      `일본 요인: ${(weights.Japan * 100).toFixed(0)}% (기본 10%)\n` +
+      `EM 요인: ${(weights.EM * 100).toFixed(0)}% (기본 10%)`;
+
+    SpreadsheetApp.getUi().alert(message);
+    Logger.log('✅ 시장 국면 체크 완료');
+
+  } catch (e) {
+    Logger.log(`❌ 시장 국면 체크 오류: ${e.message}`);
+    SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
+  }
 }
 
 /** ===============================================
@@ -2653,7 +3268,10 @@ function onOpen() {
       .addItem('🇨🇳 중국 유동성', 'checkChinaLiquidity')
       .addItem('🇯🇵 엔캐리 리스크', 'checkJapanRisk')
       .addItem('💵 TGA 분석', 'checkTGADetail')
-      .addItem('📈 DXY 추세', 'checkDXYTrend'))
+      .addItem('📈 DXY 추세', 'checkDXYTrend')
+      .addSeparator()
+      .addItem('🏦 Fed 정책 분석 (v4.0)', 'checkFedPolicy')
+      .addItem('📊 시장 국면 분석 (v4.0)', 'checkMarketRegime'))
     .addSeparator()
     .addItem('📊 종합 대시보드', 'createGlobalDashboard')
     .addItem('🔔 알림 설정/해제', 'setupGlobalAlerts')
@@ -2698,12 +3316,14 @@ function showHelp() {
     <style>
       body { font-family: Arial; font-size: 12px; padding: 15px; }
       h3 { color: #1f77b4; margin-top: 15px; }
+      h4 { color: #2c5282; margin-top: 10px; }
       code { background: #f5f5f5; padding: 3px 6px; border-radius: 3px; }
       li { margin: 8px 0; }
+      .new { color: #38a169; font-weight: bold; }
     </style>
-    
-    <h2>📊 Global Liquidity Monitor 도움말</h2>
-    
+
+    <h2>📊 Global Liquidity Monitor v4.0 도움말</h2>
+
     <h3>주요 기능</h3>
     <ul>
       <li><strong>전체 업데이트:</strong> 미국 + 글로벌 데이터 갱신 및 히스토리 누적</li>
@@ -2713,14 +3333,28 @@ function showHelp() {
       <li><strong>개별 체크:</strong> 중국, 일본, TGA, DXY 상세 분석</li>
       <li><strong>알림 설정:</strong> 2시간마다 자동 체크 (해제 가능)</li>
     </ul>
-    
+
+    <h3 class="new">v4.0 신규 기능</h3>
+    <ul>
+      <li><strong>🏦 Fed 정책 분석:</strong> QT/QE 상태, 금리 사이클, Reserve Balances, Repo 스프레드 종합 분석</li>
+      <li><strong>📊 시장 국면 분석:</strong> DXY 변동성, Fed 정책 상태 기반 시장 국면 자동 감지</li>
+      <li><strong>동적 가중치:</strong> 시장 국면에 따라 요인별 가중치 자동 조정
+        <ul>
+          <li>DXY 고변동성 국면: DXY 가중치 35%로 상향</li>
+          <li>Fed 적극 완화 국면: 미국 요인 50%로 상향</li>
+        </ul>
+      </li>
+      <li><strong>맥락 기반 DXY 해석:</strong> Fed 완화 중 DXY 하락 = 긍정적 신호로 해석</li>
+      <li><strong>추세 기반 알림:</strong> 모멘텀 급변, 추세 전환, Fed 정책 변화 감지</li>
+    </ul>
+
     <h3>히스토리 기록</h3>
     <ul>
       <li><strong>History:</strong> 미국 유동성 지표 타임시리즈</li>
       <li><strong>Global_History:</strong> 글로벌 유동성 분석 타임시리즈</li>
       <li><strong>Alert_History:</strong> 발생한 알림 전체 기록</li>
     </ul>
-    
+
     <h3>유동성 점수 (7단계)</h3>
     <ul>
       <li><strong>80점 이상:</strong> 🚀🚀 슈퍼 유동성 (공격적 Risk-ON)</li>
@@ -2731,29 +3365,41 @@ function showHelp() {
       <li><strong>-80~-50점:</strong> 🔴 극도의 긴축 (Risk-OFF)</li>
       <li><strong>-80점 이하:</strong> 🔴🔴 위기 모드 (현금 확보)</li>
     </ul>
-    
-    <h3>가중치</h3>
+
+    <h3>기본 가중치 (동적 조정됨)</h3>
     <ul>
-      <li>미국 요인: 40%</li>
-      <li>달러 지수: 20%</li>
+      <li>미국 요인: 40% (Fed 완화시 최대 50%)</li>
+      <li>달러 지수: 20% (고변동성시 최대 35%)</li>
       <li>중국: 20%</li>
       <li>일본: 10%</li>
       <li>신흥국: 10%</li>
     </ul>
-    
+
+    <h3 class="new">Fed 정책 지표 (v4.0)</h3>
+    <ul>
+      <li><strong>QT/QE 상태:</strong> WALCL 월간 변화로 양적완화/긴축 판단</li>
+      <li><strong>금리 사이클:</strong> Fed Funds Rate 변화로 완화/긴축 사이클 감지</li>
+      <li><strong>Reserve Balances:</strong> 은행 준비금 수준 모니터링 ($2.9T ample threshold)</li>
+      <li><strong>Repo 스프레드:</strong> SOFR-IORB 스프레드로 유동성 긴장 감지</li>
+    </ul>
+
     <h3>시트 구성</h3>
     <ul>
       <li><strong>Live_Monitor:</strong> 미국 지표 최신값</li>
-      <li><strong>Global_Liquidity:</strong> 글로벌 지표 최신값</li>
+      <li><strong>Global_Liquidity:</strong> 글로벌 지표 최신값 + 시장 국면</li>
       <li><strong>History:</strong> 미국 지표 히스토리</li>
       <li><strong>Global_History:</strong> 글로벌 지표 히스토리</li>
       <li><strong>Alert_History:</strong> 알림 발생 기록</li>
       <li><strong>Graph:</strong> 유동성 추세 그래프 (메인 + 요인별)</li>
       <li><strong>Scoring_Guide:</strong> 점수 계산 방법 가이드</li>
     </ul>
-  `).setWidth(500).setHeight(650);
-  
-  ui.showModelessDialog(html, '도움말');
+
+    <p style="margin-top: 20px; color: #666; font-size: 11px;">
+      버전: 4.0 (2026-01) | 동적 가중치 + Fed 정책 추적
+    </p>
+  `).setWidth(550).setHeight(850);
+
+  ui.showModelessDialog(html, 'Global Liquidity Monitor v4.0 도움말');
 }
 
 /** ===============================================
@@ -2761,32 +3407,62 @@ function showHelp() {
  * =============================================== */
 
 function testAllSystems() {
-  Logger.log('=== 전체 시스템 테스트 시작 ===');
-  
+  Logger.log('=== 전체 시스템 테스트 시작 (v4.0) ===');
+
   // 1. FRED 데이터
   Logger.log('\n--- FRED 데이터 테스트 ---');
   Object.entries(CONFIG.FRED_IDS).forEach(([name, id]) => {
     const data = getFredData(id, false);
     Logger.log(`${name}: ${data.value || 'ERROR'}`);
   });
-  
+
   // 2. 글로벌 데이터
   Logger.log('\n--- 글로벌 데이터 테스트 ---');
   const china = getChinaLiquidity();
   Logger.log(`중국 M2: ${china.m2_growth}%`);
-  
+
   const japan = getJapanLiquidity();
   Logger.log(`USD/JPY: ${japan.usdjpy}`);
-  
-  // 3. 종합 분석
+
+  // 3. v4.0: Fed 정책 분석 테스트
+  Logger.log('\n--- Fed 정책 분석 테스트 (v4.0) ---');
+  const fedPolicy = analyzeFedPolicy();
+  Logger.log(`Fed 정책 종합 점수: ${fedPolicy.totalScore}`);
+  Logger.log(`Fed 정책 신호: ${fedPolicy.overallSignal}`);
+  Logger.log(`  - QT/QE 상태: ${fedPolicy.components.qtStatus.status}`);
+  Logger.log(`  - 금리 사이클: ${fedPolicy.components.rateCycle.cycle}`);
+  Logger.log(`  - Reserve 상태: ${fedPolicy.components.reserves.status}`);
+  Logger.log(`  - Repo 스프레드: ${fedPolicy.components.repoSpread.status}`);
+
+  // 4. v4.0: 시장 국면 감지 테스트
+  Logger.log('\n--- 시장 국면 감지 테스트 (v4.0) ---');
+  const regime = detectMarketRegime();
+  Logger.log(`시장 국면: ${regime.regime}`);
+  Logger.log(`Fed 금리 인하 중: ${regime.fedCutting}`);
+  Logger.log(`QT 종료: ${regime.qtEnded}`);
+  Logger.log(`동적 가중치:`);
+  Logger.log(`  - US: ${(regime.weights.US * 100).toFixed(0)}%`);
+  Logger.log(`  - DXY: ${(regime.weights.DXY * 100).toFixed(0)}%`);
+  Logger.log(`  - China: ${(regime.weights.China * 100).toFixed(0)}%`);
+
+  // 5. 종합 분석
   Logger.log('\n--- 종합 분석 테스트 ---');
   const analysis = analyzeGlobalLiquidity();
   Logger.log(`유동성 점수: ${analysis.score}`);
   Logger.log(`신호: ${analysis.signal}`);
-  
-  // 4. 히스토리 기록 테스트
+  Logger.log(`시장 국면: ${analysis.regime}`);
+
+  // 6. v4.0: 맥락 기반 DXY 해석 테스트
+  if (analysis.details.dxy.contextual) {
+    Logger.log('\n--- 맥락 기반 DXY 해석 (v4.0) ---');
+    Logger.log(`DXY 변화: ${analysis.details.dxy.change.toFixed(2)}`);
+    Logger.log(`맥락 해석: ${analysis.details.dxy.contextual.interpretation}`);
+    Logger.log(`Fed 맥락: ${analysis.details.dxy.contextual.fedContext}`);
+  }
+
+  // 7. 히스토리 기록 테스트
   Logger.log('\n--- 히스토리 기록 테스트 ---');
   logGlobalHistory(analysis);
-  
-  Logger.log('\n=== 테스트 완료 ===');
+
+  Logger.log('\n=== 테스트 완료 (v4.0) ===');
 }
