@@ -1187,12 +1187,13 @@ function analyzeGlobalLiquidity() {
 
   } catch (e) {
     Logger.log(`❌ 글로벌 유동성 분석 오류: ${e.message}`);
-    // 트리거 실행 시 UI가 없을 수 있으므로 try-catch로 감싸기
+
     try {
       SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
     } catch (uiError) {
       Logger.log('UI 알림 불가 (트리거 실행 중)');
     }
+
     return {
       score: 0,
       signal: 'ERROR',
