@@ -1068,6 +1068,9 @@ function analyzeGlobalLiquidity() {
     // WoW 계산 (v4.1: 직전 발표값 기준)
     const walcl_wow = (walcl.value || 0) - (walcl_prev.value || 0);
 
+    // v4.1: WoW 디버깅 로그
+    Logger.log(`📊 WALCL 계산: 현재 ${walcl.value} (${walcl.date}) - 직전 ${walcl_prev.value} (${walcl_prev.date}) = WoW ${walcl_wow}`);
+
     // ============= 요인별 원점수 계산 =============
     let usScore = 0;
     let dxyScore = 0;
@@ -1448,7 +1451,11 @@ function logGlobalHistory(analysis) {
     const em = analysis.details.em || {};
     const tga = us.tga || {};
 
-    // 히스토리에 추가
+    // v4.1: WoW 값 로깅 (디버깅용)
+    Logger.log(`📊 History 기록 - WALCL: ${us.walcl}, WoW: ${us.walcl_wow}`);
+    Logger.log(`📊 History 기록 - TGA: ${tga.current}, WoW: ${tga.week_change}`);
+
+    // 히스토리에 추가 (v4.1: 중국 데이터 구조 업데이트)
     globalHistorySheet.appendRow([
       analysis.timestamp,
       us.walcl || 0,
@@ -1458,9 +1465,9 @@ function logGlobalHistory(analysis) {
       us.onrrp || 0,
       dxy.level || 0,
       dxy.change || 0,
-      china.m2_growth || 0,
-      china.total_credit || 0,
-      china.fx_reserves || 0,
+      china.usdcny || 0,           // v4.1: USD/CNY
+      china.usdcny_change || 0,    // v4.1: CNY 변화율
+      china.liquidity_signal || 'N/A',  // v4.1: 중국 신호
       japan.usdjpy || 0,
       japan.jgb_10y || 0,
       japan.us_jpy_spread || 0,
