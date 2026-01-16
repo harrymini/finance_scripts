@@ -46,7 +46,7 @@ const CONFIG = {
     
     // 중국 지표
     CHINA_M2_YOY: 'MABMM301CNM657S',
-    CHINA_LOAN: 'QCNLOANTOPRIV',
+    CHINA_LOAN: 'CRDQCNAPABIS',       // Updated: Total Credit to Private Non-Financial Sector (BIS)
     CHINA_RESERVES: 'TRESEGCNM052N',
     
     // 일본 지표
