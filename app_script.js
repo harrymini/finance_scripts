@@ -1557,16 +1557,22 @@ function populateHistoryFromJanuary() {
  * Global_History 시트를 올해 1월부터 현재까지 데이터로 채우기
  */
 function populateGlobalHistoryFromJanuary() {
+  Logger.log('>>> populateGlobalHistoryFromJanuary 시작');
   try {
+    Logger.log('>>> SpreadsheetApp.getActive() 호출');
     const ss = SpreadsheetApp.getActive();
+    Logger.log('>>> SpreadsheetApp.getUi() 호출');
     const ui = SpreadsheetApp.getUi();
+    Logger.log('>>> ui.alert() 호출 전');
     const result = ui.alert(
       'Global History 데이터 업데이트',
       '올해 1월 1일부터 현재까지 데이터를 Global_History 시트에 추가합니다.\n\n⚠️ 이 작업은 2-3분 소요됩니다. (13개 API 호출)\n\n진행 상황은 우측 하단 토스트에서 확인하세요.\n\n계속하시겠습니까?',
       ui.ButtonSet.YES_NO
     );
+    Logger.log('>>> ui.alert() 응답: ' + result);
 
     if (result !== ui.Button.YES) {
+      Logger.log('>>> 사용자가 취소함');
       return;
     }
 
