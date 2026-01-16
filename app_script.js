@@ -352,7 +352,7 @@ function getChinaLiquidity(dxyChange) {
     }
 
     // DXY와 CNY 조합 로직으로 신호 결정
-    const signal = determineChinaSignal(dxyChange, baseData.usdcny_change);
+    const signal = determineChinaSignal(dxyChange, baseData.usdcny_change || 0);
 
     const result = {
       ...baseData,
@@ -361,7 +361,9 @@ function getChinaLiquidity(dxyChange) {
       interpretation: signal.interpretation
     };
 
-    Logger.log(`✅ 중국 유동성: USD/CNY ${baseData.usdcny.toFixed(4)}, 변화 ${baseData.usdcny_change.toFixed(2)}%, ${signal.interpretation}`);
+    const usdcnyStr = baseData.usdcny ? baseData.usdcny.toFixed(4) : 'N/A';
+    const changeStr = baseData.usdcny_change ? baseData.usdcny_change.toFixed(2) : '0.00';
+    Logger.log(`✅ 중국 유동성: USD/CNY ${usdcnyStr}, 변화 ${changeStr}%, ${signal.interpretation}`);
 
     return result;
 
