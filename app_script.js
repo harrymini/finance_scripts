@@ -157,6 +157,43 @@ function getFredDataHistorical(fredId, daysAgo) {
 }
 
 /**
+ * v4.1: 직전 발표 데이터 조회 (주간 데이터용)
+ * - WALCL, TGA 등 주간 데이터의 WoW 계산에 사용
+ * - 실행 날짜와 무관하게 항상 직전 발표값 반환
+ */
+function getPreviousRelease(fredId) {
+  try {
+    const url = `${CONFIG.FRED_BASE}?id=${fredId}`;
+    const response = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      timeout: 15000
+    });
+
+    if (response.getResponseCode() !== 200) {
+      return { value: 0, date: null };
+    }
+
+    const csv = response.getContentText();
+    const lines = csv.trim().split('\n');
+
+    // 마지막에서 두 번째 데이터 (직전 발표)
+    if (lines.length >= 3) {
+      const [date, value] = lines[lines.length - 2].split(',');
+      return {
+        date: date.trim(),
+        value: parseFloat(value.trim())
+      };
+    }
+
+    return { value: 0, date: null };
+
+  } catch (e) {
+    Logger.log(`❌ Previous Release 조회 오류 [${fredId}]: ${e.message}`);
+    return { value: 0, date: null };
+  }
+}
+
+/**
  * FRED에서 날짜 범위로 데이터 가져오기
  * @param {string} fredId - FRED 시리즈 ID
  * @param {Date} startDate - 시작 날짜
@@ -293,7 +330,7 @@ function getChinaLiquidity(dxyChange) {
     if (cached) {
       baseData = JSON.parse(cached);
     } else {
-      // USD/CNY 환율 (실시간)
+      // USD/CNY 환율 (일간 데이터 - 7일 전 비교)
       const usdcny = getFredData(CONFIG.GLOBAL_FRED_IDS.USDCNY, false);
       const usdcny_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.USDCNY, 7);
       const reserves = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_RESERVES, false);
@@ -478,16 +515,18 @@ function determineCarryRisk(usdjpy, spread) {
 function getTGAAnalysis() {
   try {
     const tga = getFredData(CONFIG.FRED_IDS.TGA, false);
-    const tga_1w = getFredDataHistorical(CONFIG.FRED_IDS.TGA, 7);
+    const tga_prev = getPreviousRelease(CONFIG.FRED_IDS.TGA);  // v4.1: 직전 발표값
     const tga_1m = getFredDataHistorical(CONFIG.FRED_IDS.TGA, 30);
-    
+
     const current = tga.value || 0;
-    const weekAgo = tga_1w.value || current;
+    const prevRelease = tga_prev.value || current;  // 직전 주 발표값
     const monthAgo = tga_1m.value || current;
-    
-    const weekChange = current - weekAgo;
+
+    const weekChange = current - prevRelease;  // v4.1: 직전 발표값 기준
     const monthChange = current - monthAgo;
-    
+
+    Logger.log(`✅ TGA: 현재 ${current}, 직전 ${prevRelease}, WoW ${weekChange}`);
+
     return {
       current: current,
       week_change: weekChange,
@@ -495,10 +534,10 @@ function getTGAAnalysis() {
       liquidity_impact: determineTGAImpact(weekChange, monthChange),
       debt_ceiling_risk: checkDebtCeilingRisk(current)
     };
-    
+
   } catch (e) {
     Logger.log(`❌ TGA 분석 오류: ${e.message}`);
-    return { current: 0, liquidity_impact: 'NO DATA' };
+    return { current: 0, week_change: 0, liquidity_impact: 'NO DATA' };
   }
 }
 
@@ -1009,14 +1048,14 @@ function analyzeGlobalLiquidity() {
     const marketRegime = detectMarketRegime();
     const fedPolicy = analyzeFedPolicy();
 
-    // 데이터 수집
+    // 데이터 수집 (v4.1: 주간 데이터는 직전 발표값과 비교)
     const walcl = getFredData(CONFIG.FRED_IDS.WALCL);
-    const walcl_1w = getFredDataHistorical(CONFIG.FRED_IDS.WALCL, 7);
+    const walcl_prev = getPreviousRelease(CONFIG.FRED_IDS.WALCL);  // 직전 주 발표값
     const tga = getTGAAnalysis();
     const onRrp = getFredData(CONFIG.FRED_IDS.ON_RRP);
 
     const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY);
-    const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
+    const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);  // 일간 데이터 - 7일 전
     const dxy_change = (dxy.value || 100) - (dxy_1w.value || 100);
 
     // 중국: DXY 변화와 함께 분석 (DXY+CNY 조합 로직)
@@ -1024,8 +1063,8 @@ function analyzeGlobalLiquidity() {
     const japan = getJapanLiquidity();
     const emFx = getEmergingMarketsFX();
 
-    // WoW 계산
-    const walcl_wow = (walcl.value || 0) - (walcl_1w.value || 0);
+    // WoW 계산 (v4.1: 직전 발표값 기준)
+    const walcl_wow = (walcl.value || 0) - (walcl_prev.value || 0);
 
     // ============= 요인별 원점수 계산 =============
     let usScore = 0;
