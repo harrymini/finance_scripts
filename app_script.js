@@ -1,9 +1,9 @@
 /****************************************************
- * Global Liquidity Monitor v4.0 - 동적 가중치 + Fed 정책 추적
+ * Global Liquidity Monitor v4.1 - DXY+CNY 조합 로직 + 가중치 조정
  *
  * 주요 기능:
  * 1. 미국 유동성 모니터링 (WALCL, TGA, ON RRP)
- * 2. 글로벌 유동성 추적 (중국 M2, BOJ, DXY)
+ * 2. 글로벌 유동성 추적 (USD/CNY, USD/JPY, DXY)
  * 3. 신흥국 통화 모니터링
  * 4. 종합 유동성 점수 (7단계 신호, 5단계 세분화)
  * 5. 알림 설정/해제 기능 (±50, ±80 임계값)
@@ -15,6 +15,11 @@
  * 9. Fed 정책 추적 강화 (QT/QE 상태, 금리 사이클, Reserve Balances)
  * 10. 맥락 기반 DXY 스코어링 (Fed 완화기 DXY 하락 = 긍정)
  * 11. 추세 기반 알림 시스템 (모멘텀/추세 변화 감지)
+ *
+ * v4.1 신규 기능 (2026-01):
+ * 12. DXY + CNY 조합 로직 (중국 M2 대신 실시간 USD/CNY 사용)
+ * 13. 가중치 재조정: US 45%, DXY 25%, China 5%, Japan 10%, EM 15%
+ * 14. 중국 데이터 지연 문제 해결 (9개월 → 실시간)
  ****************************************************/
 
 const CONFIG = {
@@ -44,10 +49,9 @@ const CONFIG = {
     // 달러 인덱스
     DXY: 'DTWEXBGS',
     
-    // 중국 지표
-    CHINA_M2_YOY: 'MABMM301CNM657S',
-    CHINA_LOAN: 'CRDQCNAPABIS',       // Updated: Total Credit to Private Non-Financial Sector (BIS)
-    CHINA_RESERVES: 'TRESEGCNM052N',
+    // 중국 지표 (실시간 환율 기반으로 변경 - 신용 데이터는 9개월 지연)
+    USDCNY: 'DEXCHUS',                // USD/CNY 환율 (실시간)
+    CHINA_RESERVES: 'TRESEGCNM052N',  // 외환보유고 (참고용)
     
     // 일본 지표
     USDJPY: 'DEXJPUS',
@@ -149,6 +153,43 @@ function getFredDataHistorical(fredId, daysAgo) {
   } catch (e) {
     Logger.log(`❌ Historical 데이터 오류: ${e.message}`);
     return { value: 0 };
+  }
+}
+
+/**
+ * v4.1: 직전 발표 데이터 조회 (주간 데이터용)
+ * - WALCL, TGA 등 주간 데이터의 WoW 계산에 사용
+ * - 실행 날짜와 무관하게 항상 직전 발표값 반환
+ */
+function getPreviousRelease(fredId) {
+  try {
+    const url = `${CONFIG.FRED_BASE}?id=${fredId}`;
+    const response = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      timeout: 15000
+    });
+
+    if (response.getResponseCode() !== 200) {
+      return { value: 0, date: null };
+    }
+
+    const csv = response.getContentText();
+    const lines = csv.trim().split('\n');
+
+    // 마지막에서 두 번째 데이터 (직전 발표)
+    if (lines.length >= 3) {
+      const [date, value] = lines[lines.length - 2].split(',');
+      return {
+        date: date.trim(),
+        value: parseFloat(value.trim())
+      };
+    }
+
+    return { value: 0, date: null };
+
+  } catch (e) {
+    Logger.log(`❌ Previous Release 조회 오류 [${fredId}]: ${e.message}`);
+    return { value: 0, date: null };
   }
 }
 
@@ -277,51 +318,85 @@ function getSRFData() {
  * 3) 중국 유동성 모니터링
  * =============================================== */
 
-function getChinaLiquidity() {
+function getChinaLiquidity(dxyChange) {
   try {
     const cache = CacheService.getScriptCache();
     const cacheKey = 'CHINA_LIQUIDITY';
-    
+
+    // 캐시는 dxyChange 없이 기본 데이터만 저장
     const cached = cache.get(cacheKey);
+    let baseData;
+
     if (cached) {
-      return JSON.parse(cached);
+      baseData = JSON.parse(cached);
+    } else {
+      // USD/CNY 환율 (일간 데이터 - 7일 전 비교)
+      const usdcny = getFredData(CONFIG.GLOBAL_FRED_IDS.USDCNY, false);
+      const usdcny_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.USDCNY, 7);
+      const reserves = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_RESERVES, false);
+
+      // CNY 변화율 계산 (양수 = 위안 약세, 음수 = 위안 강세)
+      let cnyChange = 0;
+      if (usdcny.value && usdcny_1w.value && usdcny_1w.value > 0) {
+        cnyChange = ((usdcny.value - usdcny_1w.value) / usdcny_1w.value) * 100;
+      }
+
+      baseData = {
+        usdcny: usdcny.value || 0,
+        usdcny_change: cnyChange,
+        fx_reserves: reserves.value || 0,
+        timestamp: new Date().getTime()
+      };
+
+      cache.put(cacheKey, JSON.stringify(baseData), 3600);
     }
-    
-    const m2_yoy = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_M2_YOY, false);
-    const loans = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_LOAN, false);
-    const reserves = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_RESERVES, false);
-    
+
+    // DXY와 CNY 조합 로직으로 신호 결정
+    const signal = determineChinaSignal(dxyChange, baseData.usdcny_change);
+
     const result = {
-      m2_growth: m2_yoy.value || 0,
-      m2_date: m2_yoy.date,
-      total_credit: loans.value || 0,
-      fx_reserves: reserves.value || 0,
-      liquidity_signal: determineChinaSignal(m2_yoy.value),
-      timestamp: new Date().getTime()
+      ...baseData,
+      liquidity_signal: signal.signal,
+      score: signal.score,
+      interpretation: signal.interpretation
     };
-    
-    cache.put(cacheKey, JSON.stringify(result), 3600);
-    Logger.log(`✅ 중국 유동성 데이터: M2 YoY ${result.m2_growth}%`);
-    
+
+    Logger.log(`✅ 중국 유동성: USD/CNY ${baseData.usdcny.toFixed(4)}, 변화 ${baseData.usdcny_change.toFixed(2)}%, ${signal.interpretation}`);
+
     return result;
-    
+
   } catch (e) {
     Logger.log(`❌ 중국 데이터 오류: ${e.message}`);
-    return { m2_growth: 0, total_credit: 0, liquidity_signal: 'NO DATA' };
+    return { usdcny: 0, usdcny_change: 0, fx_reserves: 0, liquidity_signal: 'NO DATA', score: 0 };
   }
 }
 
-function determineChinaSignal(m2_growth) {
-  if (m2_growth > 12) {
-    return '🔴 과잉 유동성';
-  } else if (m2_growth > 10) {
-    return '✅ 적정 성장';
-  } else if (m2_growth > 8) {
-    return '⚖️ 중립';
-  } else if (m2_growth > 6) {
-    return '⚠️ 성장 둔화';
+/**
+ * DXY + CNY 조합 로직
+ * - DXY↓ + CNY 강세 → 확실한 긍정 (+10)
+ * - DXY↑ + CNY 약세 → 확실한 부정 (-10)
+ * - DXY↓ + CNY 약세 → 중국 자체 문제 (-5)
+ * - DXY↑ + CNY 강세 → 중국 선방 (+5)
+ */
+function determineChinaSignal(dxyChange, cnyChange) {
+  // dxyChange: 양수 = 달러 강세, 음수 = 달러 약세
+  // cnyChange: 양수 = 위안 약세 (USD/CNY 상승), 음수 = 위안 강세 (USD/CNY 하락)
+
+  const dxyWeak = dxyChange < -0.5;   // DXY 0.5% 이상 하락
+  const dxyStrong = dxyChange > 0.5;  // DXY 0.5% 이상 상승
+  const cnyStrong = cnyChange < -0.3; // CNY 0.3% 이상 강세
+  const cnyWeak = cnyChange > 0.3;    // CNY 0.3% 이상 약세
+
+  if (dxyWeak && cnyStrong) {
+    return { signal: '🚀 위안 강세 + 달러 약세', score: 10, interpretation: '글로벌 유동성 최적' };
+  } else if (dxyStrong && cnyWeak) {
+    return { signal: '🔴 위안 약세 + 달러 강세', score: -10, interpretation: '글로벌 유동성 악화' };
+  } else if (dxyWeak && cnyWeak) {
+    return { signal: '⚠️ 위안 약세 (중국 문제)', score: -5, interpretation: '중국 자체 리스크' };
+  } else if (dxyStrong && cnyStrong) {
+    return { signal: '✅ 위안 선방', score: 5, interpretation: '중국 상대적 강세' };
   } else {
-    return '🔵 유동성 부족';
+    return { signal: '⚖️ 중립', score: 0, interpretation: '뚜렷한 방향 없음' };
   }
 }
 
@@ -440,16 +515,18 @@ function determineCarryRisk(usdjpy, spread) {
 function getTGAAnalysis() {
   try {
     const tga = getFredData(CONFIG.FRED_IDS.TGA, false);
-    const tga_1w = getFredDataHistorical(CONFIG.FRED_IDS.TGA, 7);
+    const tga_prev = getPreviousRelease(CONFIG.FRED_IDS.TGA);  // v4.1: 직전 발표값
     const tga_1m = getFredDataHistorical(CONFIG.FRED_IDS.TGA, 30);
-    
+
     const current = tga.value || 0;
-    const weekAgo = tga_1w.value || current;
+    const prevRelease = tga_prev.value || current;  // 직전 주 발표값
     const monthAgo = tga_1m.value || current;
-    
-    const weekChange = current - weekAgo;
+
+    const weekChange = current - prevRelease;  // v4.1: 직전 발표값 기준
     const monthChange = current - monthAgo;
-    
+
+    Logger.log(`✅ TGA: 현재 ${current}, 직전 ${prevRelease}, WoW ${weekChange}`);
+
     return {
       current: current,
       week_change: weekChange,
@@ -457,10 +534,10 @@ function getTGAAnalysis() {
       liquidity_impact: determineTGAImpact(weekChange, monthChange),
       debt_ceiling_risk: checkDebtCeilingRisk(current)
     };
-    
+
   } catch (e) {
     Logger.log(`❌ TGA 분석 오류: ${e.message}`);
-    return { current: 0, liquidity_impact: 'NO DATA' };
+    return { current: 0, week_change: 0, liquidity_impact: 'NO DATA' };
   }
 }
 
@@ -752,13 +829,14 @@ function detectMarketRegime() {
     const fedCutting = rateCycle.cycle.includes('CUTTING');
     const qtEnded = qtStatus.status === 'QE' || qtStatus.status === 'MILD_QE' || qtStatus.status === 'NEUTRAL';
 
+    // v4.1: 새 기본 가중치 (US 45%, DXY 25%, China 5%, Japan 10%, EM 15%)
     let regime = 'NORMAL';
     let weights = {
-      US: 0.40,
-      DXY: 0.20,
-      China: 0.20,
+      US: 0.45,
+      DXY: 0.25,
+      China: 0.05,
       Japan: 0.10,
-      EM: 0.10
+      EM: 0.15
     };
 
     // 국면 판단 로직
@@ -766,31 +844,31 @@ function detectMarketRegime() {
       // DXY 고변동성 국면: DXY 영향력 증가
       regime = 'DXY_VOLATILE';
       weights = {
-        US: 0.25,
-        DXY: 0.35,
-        China: 0.20,
+        US: 0.30,
+        DXY: 0.40,
+        China: 0.05,
         Japan: 0.10,
-        EM: 0.10
+        EM: 0.15
       };
     } else if (fedCutting && qtEnded) {
       // Fed 적극 완화 국면: 미국 요인 지배
       regime = 'FED_EASING';
       weights = {
-        US: 0.50,
-        DXY: 0.10,
-        China: 0.20,
+        US: 0.55,
+        DXY: 0.15,
+        China: 0.05,
         Japan: 0.10,
-        EM: 0.10
+        EM: 0.15
       };
     } else if (fedCutting) {
       // 금리 인하 사이클: 미국 요인 강화
       regime = 'RATE_CUTTING';
       weights = {
-        US: 0.45,
-        DXY: 0.15,
-        China: 0.20,
+        US: 0.50,
+        DXY: 0.20,
+        China: 0.05,
         Japan: 0.10,
-        EM: 0.10
+        EM: 0.15
       };
     }
 
@@ -809,7 +887,7 @@ function detectMarketRegime() {
     Logger.log(`❌ Market Regime 오류: ${e.message}`);
     return {
       regime: 'NORMAL',
-      weights: { US: 0.40, DXY: 0.20, China: 0.20, Japan: 0.10, EM: 0.10 }
+      weights: { US: 0.45, DXY: 0.25, China: 0.05, Japan: 0.10, EM: 0.15 }  // v4.1 가중치
     };
   }
 }
@@ -970,22 +1048,23 @@ function analyzeGlobalLiquidity() {
     const marketRegime = detectMarketRegime();
     const fedPolicy = analyzeFedPolicy();
 
-    // 데이터 수집
+    // 데이터 수집 (v4.1: 주간 데이터는 직전 발표값과 비교)
     const walcl = getFredData(CONFIG.FRED_IDS.WALCL);
-    const walcl_1w = getFredDataHistorical(CONFIG.FRED_IDS.WALCL, 7);
+    const walcl_prev = getPreviousRelease(CONFIG.FRED_IDS.WALCL);  // 직전 주 발표값
     const tga = getTGAAnalysis();
     const onRrp = getFredData(CONFIG.FRED_IDS.ON_RRP);
 
     const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY);
-    const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
+    const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);  // 일간 데이터 - 7일 전
     const dxy_change = (dxy.value || 100) - (dxy_1w.value || 100);
 
-    const china = getChinaLiquidity();
+    // 중국: DXY 변화와 함께 분석 (DXY+CNY 조합 로직)
+    const china = getChinaLiquidity(dxy_change);
     const japan = getJapanLiquidity();
     const emFx = getEmergingMarketsFX();
 
-    // WoW 계산
-    const walcl_wow = (walcl.value || 0) - (walcl_1w.value || 0);
+    // WoW 계산 (v4.1: 직전 발표값 기준)
+    const walcl_wow = (walcl.value || 0) - (walcl_prev.value || 0);
 
     // ============= 요인별 원점수 계산 =============
     let usScore = 0;
@@ -1031,23 +1110,16 @@ function analyzeGlobalLiquidity() {
       usScore += 10;
     }
 
-    // 4. v4.0: Fed 정책 점수 추가 (동적 가중치 시 비중 증가)
-    usScore += fedPolicy.totalScore * 0.5; // Fed 정책의 50%를 US 점수에 반영
+    // 4. v4.0: Fed 정책 점수 추가
+    usScore += fedPolicy.totalScore * 0.5;
 
     // === 달러 요인 (v4.0: 맥락 기반 스코어링) ===
     const contextualDxy = getContextualDXYScore(dxy_change);
     dxyScore = contextualDxy.score;
 
-    // === 중국 요인 ===
-    if (china.m2_growth > 12) {
-      chinaScore += 20;
-    } else if (china.m2_growth > 10) {
-      chinaScore += 15;
-    } else if (china.m2_growth < 6) {
-      chinaScore -= 20;
-    } else if (china.m2_growth < 8) {
-      chinaScore -= 10;
-    }
+    // === 중국 요인 (v4.1: DXY+CNY 조합 로직, 5% 가중치) ===
+    // getChinaLiquidity에서 이미 DXY와 CNY 조합으로 점수 계산됨
+    chinaScore = china.score || 0;
 
     // === 일본 요인 ===
     if (japan.usdjpy > 155) {
@@ -1071,14 +1143,14 @@ function analyzeGlobalLiquidity() {
       emScore -= 10;
     }
 
-    // ============= v4.0: 동적 가중치 적용 =============
+    // ============= v4.1: 새 가중치 (US 45%, DXY 25%, China 5%, Japan 10%, EM 15%) =============
     const weights = marketRegime.weights;
     let liquidityScore = Math.round(
-      usScore * (weights.US / 0.40) +       // US 기본 40% 대비 조정
-      dxyScore * (weights.DXY / 0.20) +     // DXY 기본 20% 대비 조정
-      chinaScore * (weights.China / 0.20) + // China 기본 20% 대비 조정
+      usScore * (weights.US / 0.45) +       // US 기본 45% 대비 조정
+      dxyScore * (weights.DXY / 0.25) +     // DXY 기본 25% 대비 조정
+      chinaScore * (weights.China / 0.05) + // China 기본 5% 대비 조정
       japanScore * (weights.Japan / 0.10) + // Japan 기본 10% 대비 조정
-      emScore * (weights.EM / 0.10)         // EM 기본 10% 대비 조정
+      emScore * (weights.EM / 0.15)         // EM 기본 15% 대비 조정
     );
 
     // 최종 신호 결정 (7단계 확장 범위)
@@ -1120,9 +1192,9 @@ function analyzeGlobalLiquidity() {
       onRrp.value,
       dxy.value,
       dxy_change,
-      china.m2_growth,
-      china.total_credit,
-      china.fx_reserves,
+      china.usdcny,           // v4.1: USD/CNY 환율
+      china.usdcny_change,    // v4.1: CNY 주간 변화율
+      china.liquidity_signal, // v4.1: DXY+CNY 조합 신호
       japan.usdjpy,
       japan.jgb_10y,
       japan.us_jpy_spread,
@@ -1201,12 +1273,12 @@ function analyzeGlobalLiquidity() {
       recommendation: '오류 발생 - 데이터 확인 필요',
       regime: 'UNKNOWN',
       fedPolicy: null,
-      weights: { US: 0.40, DXY: 0.20, China: 0.20, Japan: 0.10, EM: 0.10 },
+      weights: { US: 0.45, DXY: 0.25, China: 0.05, Japan: 0.10, EM: 0.15 },  // v4.1 가중치
       componentScores: { us: 0, dxy: 0, china: 0, japan: 0, em: 0 },
       details: {
         us: { walcl: 0, walcl_wow: 0, tga: { current: 0, week_change: 0 }, onrrp: 0 },
         dxy: { level: 0, change: 0, contextual: null },
-        china: { m2_growth: 0, total_credit: 0, fx_reserves: 0 },
+        china: { usdcny: 0, usdcny_change: 0, fx_reserves: 0, score: 0 },  // v4.1 구조
         japan: { usdjpy: 0, jgb_10y: 0, us_jpy_spread: 0 },
         em: { usdkrw: 0, usdbrl: 0, strength_index: 0 }
       }
@@ -1226,7 +1298,7 @@ function setupGlobalSheet(sheet) {
     'TGA(M$)', 'TGA WoW',
     'ON RRP(M$)',
     'DXY', 'DXY WoW',
-    '중국 M2(%)', '중국 신용', '중국 FX',
+    'USD/CNY', 'CNY 변화(%)', '중국 신호',  // v4.1: DXY+CNY 조합
     'USD/JPY', 'JGB 10Y', 'US-JP 스프레드',
     'USD/KRW', 'USD/BRL', 'EM 강세지수',
     '유동성 점수', '신호', '투자 권장',
@@ -1558,21 +1630,28 @@ function populateHistoryFromJanuary() {
  * Global_History 시트를 올해 1월부터 현재까지 데이터로 채우기
  */
 function populateGlobalHistoryFromJanuary() {
+  Logger.log('>>> populateGlobalHistoryFromJanuary 시작');
   try {
+    Logger.log('>>> SpreadsheetApp.getActive() 호출');
+    const ss = SpreadsheetApp.getActive();
+    Logger.log('>>> SpreadsheetApp.getUi() 호출');
     const ui = SpreadsheetApp.getUi();
+    Logger.log('>>> ui.alert() 호출 전');
     const result = ui.alert(
       'Global History 데이터 업데이트',
-      '올해 1월 1일부터 현재까지 데이터를 Global_History 시트에 추가합니다.\n\n⚠️ 이 작업은 시간이 걸릴 수 있습니다.\n\n계속하시겠습니까?',
+      '올해 1월 1일부터 현재까지 데이터를 Global_History 시트에 추가합니다.\n\n⚠️ 이 작업은 2-3분 소요됩니다. (13개 API 호출)\n\n진행 상황은 우측 하단 토스트에서 확인하세요.\n\n계속하시겠습니까?',
       ui.ButtonSet.YES_NO
     );
+    Logger.log('>>> ui.alert() 응답: ' + result);
 
     if (result !== ui.Button.YES) {
+      Logger.log('>>> 사용자가 취소함');
       return;
     }
 
     Logger.log('=== Global_History 시트 일괄 업데이트 시작 ===');
+    ss.toast('🚀 Global History 업데이트 시작...', '진행 중', -1);
 
-    const ss = SpreadsheetApp.getActive();
     let globalHistorySheet = ss.getSheetByName(CONFIG.GLOBAL_HISTORY_SHEET);
 
     // Global_History 시트가 없으면 생성
@@ -1599,25 +1678,51 @@ function populateGlobalHistoryFromJanuary() {
     // 올해 1월 1일
     const startDate = new Date('2025-01-01');
 
-    // 모든 지표의 데이터 가져오기
+    // 모든 지표의 데이터 가져오기 (진행 상황 표시)
     Logger.log('📥 FRED 데이터 수집 중...');
 
     // US 지표
+    ss.toast('📥 1/13: WALCL 데이터 수집 중...', '진행 중', -1);
     const walclData = getFredDataRange(CONFIG.FRED_IDS.WALCL, startDate);
+
+    ss.toast('📥 2/13: TGA 데이터 수집 중...', '진행 중', -1);
     const tgaData = getFredDataRange(CONFIG.FRED_IDS.TGA, startDate);
+
+    ss.toast('📥 3/13: ON RRP 데이터 수집 중...', '진행 중', -1);
     const onRrpData = getFredDataRange(CONFIG.FRED_IDS.ON_RRP, startDate);
 
     // Global 지표
+    ss.toast('📥 4/13: DXY 데이터 수집 중...', '진행 중', -1);
     const dxyData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.DXY, startDate);
+
+    ss.toast('📥 5/13: 중국 M2 데이터 수집 중...', '진행 중', -1);
     const chinaM2Data = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_M2_YOY, startDate);
+
+    ss.toast('📥 6/13: 중국 신용 데이터 수집 중...', '진행 중', -1);
     const chinaLoanData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_LOAN, startDate);
+
+    ss.toast('📥 7/13: 중국 FX 데이터 수집 중...', '진행 중', -1);
     const chinaReservesData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.CHINA_RESERVES, startDate);
+
+    ss.toast('📥 8/13: USD/JPY 데이터 수집 중...', '진행 중', -1);
     const usdjpyData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDJPY, startDate);
+
+    ss.toast('📥 9/13: JGB 10Y 데이터 수집 중...', '진행 중', -1);
     const jgb10yData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.JGB_10Y, startDate);
+
+    ss.toast('📥 10/13: US 10Y 데이터 수집 중...', '진행 중', -1);
     const us10yData = getFredDataRange('DGS10', startDate);
+
+    ss.toast('📥 11/13: USD/KRW 데이터 수집 중...', '진행 중', -1);
     const usdkrwData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDKRW, startDate);
+
+    ss.toast('📥 12/13: USD/BRL 데이터 수집 중...', '진행 중', -1);
     const usdbrData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDBRL, startDate);
+
+    ss.toast('📥 13/13: USD/MXN 데이터 수집 중...', '진행 중', -1);
     const usdmxnData = getFredDataRange(CONFIG.GLOBAL_FRED_IDS.USDMXN, startDate);
+
+    ss.toast('📊 데이터 처리 중...', '진행 중', -1);
 
     // WALCL을 기준으로 날짜 목록 생성 (주간 데이터)
     const walclDates = Object.keys(walclData).sort();
@@ -1773,9 +1878,11 @@ function populateGlobalHistoryFromJanuary() {
 
     // Global_History 시트에 모든 행 추가
     if (rows.length > 0) {
+      ss.toast('💾 시트에 저장 중...', '진행 중', -1);
       globalHistorySheet.getRange(globalHistorySheet.getLastRow() + 1, 1, rows.length, 20).setValues(rows);
       Logger.log(`✅ ${rows.length}개 행이 Global_History 시트에 추가됨`);
 
+      ss.toast(`✅ ${rows.length}개 데이터 저장 완료!`, '완료', 5);
       ui.alert(
         '✅ 완료',
         `${rows.length}개 데이터 포인트가 Global_History 시트에 추가되었습니다.\n\n기간: ${walclDates[0]} ~ ${walclDates[walclDates.length-1]}`,
@@ -1787,7 +1894,12 @@ function populateGlobalHistoryFromJanuary() {
 
   } catch (e) {
     Logger.log(`❌ Global_History 업데이트 오류: ${e.message}`);
-    SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
+    try {
+      SpreadsheetApp.getActive().toast(`❌ 오류: ${e.message}`, '오류', 10);
+      SpreadsheetApp.getUi().alert(`❌ 오류: ${e.message}`);
+    } catch (uiError) {
+      Logger.log('UI 알림 불가 (트리거 실행 중)');
+    }
   }
 }
 
