@@ -1,9 +1,9 @@
 /****************************************************
- * Global Liquidity Monitor v4.0 - 동적 가중치 + Fed 정책 추적
+ * Global Liquidity Monitor v4.1 - DXY+CNY 조합 로직 + 가중치 조정
  *
  * 주요 기능:
  * 1. 미국 유동성 모니터링 (WALCL, TGA, ON RRP)
- * 2. 글로벌 유동성 추적 (중국 M2, BOJ, DXY)
+ * 2. 글로벌 유동성 추적 (USD/CNY, USD/JPY, DXY)
  * 3. 신흥국 통화 모니터링
  * 4. 종합 유동성 점수 (7단계 신호, 5단계 세분화)
  * 5. 알림 설정/해제 기능 (±50, ±80 임계값)
@@ -15,6 +15,11 @@
  * 9. Fed 정책 추적 강화 (QT/QE 상태, 금리 사이클, Reserve Balances)
  * 10. 맥락 기반 DXY 스코어링 (Fed 완화기 DXY 하락 = 긍정)
  * 11. 추세 기반 알림 시스템 (모멘텀/추세 변화 감지)
+ *
+ * v4.1 신규 기능 (2026-01):
+ * 12. DXY + CNY 조합 로직 (중국 M2 대신 실시간 USD/CNY 사용)
+ * 13. 가중치 재조정: US 45%, DXY 25%, China 5%, Japan 10%, EM 15%
+ * 14. 중국 데이터 지연 문제 해결 (9개월 → 실시간)
  ****************************************************/
 
 const CONFIG = {
@@ -44,9 +49,9 @@ const CONFIG = {
     // 달러 인덱스
     DXY: 'DTWEXBGS',
     
-    // 중국 지표 (CHINA_M2_YOY 시리즈는 2018년 중단됨 - 신용 증가율로 대체)
-    CHINA_LOAN: 'CRDQCNAPABIS',       // Total Credit to Private Non-Financial Sector (BIS) - M2 대용
-    CHINA_RESERVES: 'TRESEGCNM052N',
+    // 중국 지표 (실시간 환율 기반으로 변경 - 신용 데이터는 9개월 지연)
+    USDCNY: 'DEXCHUS',                // USD/CNY 환율 (실시간)
+    CHINA_RESERVES: 'TRESEGCNM052N',  // 외환보유고 (참고용)
     
     // 일본 지표
     USDJPY: 'DEXJPUS',
@@ -276,58 +281,85 @@ function getSRFData() {
  * 3) 중국 유동성 모니터링
  * =============================================== */
 
-function getChinaLiquidity() {
+function getChinaLiquidity(dxyChange) {
   try {
     const cache = CacheService.getScriptCache();
     const cacheKey = 'CHINA_LIQUIDITY';
 
+    // 캐시는 dxyChange 없이 기본 데이터만 저장
     const cached = cache.get(cacheKey);
+    let baseData;
+
     if (cached) {
-      return JSON.parse(cached);
+      baseData = JSON.parse(cached);
+    } else {
+      // USD/CNY 환율 (실시간)
+      const usdcny = getFredData(CONFIG.GLOBAL_FRED_IDS.USDCNY, false);
+      const usdcny_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.USDCNY, 7);
+      const reserves = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_RESERVES, false);
+
+      // CNY 변화율 계산 (양수 = 위안 약세, 음수 = 위안 강세)
+      let cnyChange = 0;
+      if (usdcny.value && usdcny_1w.value && usdcny_1w.value > 0) {
+        cnyChange = ((usdcny.value - usdcny_1w.value) / usdcny_1w.value) * 100;
+      }
+
+      baseData = {
+        usdcny: usdcny.value || 0,
+        usdcny_change: cnyChange,
+        fx_reserves: reserves.value || 0,
+        timestamp: new Date().getTime()
+      };
+
+      cache.put(cacheKey, JSON.stringify(baseData), 3600);
     }
 
-    // 중국 신용 데이터 (현재 + 1년 전) - M2 YoY 시리즈가 2018년에 중단되어 신용 증가율로 대체
-    const loans = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_LOAN, false);
-    const loans_1y = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.CHINA_LOAN, 365);
-    const reserves = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_RESERVES, false);
-
-    // 신용 증가율 계산 (YoY %)
-    let creditGrowthYoY = 0;
-    if (loans.value && loans_1y.value && loans_1y.value > 0) {
-      creditGrowthYoY = ((loans.value - loans_1y.value) / loans_1y.value) * 100;
-    }
+    // DXY와 CNY 조합 로직으로 신호 결정
+    const signal = determineChinaSignal(dxyChange, baseData.usdcny_change);
 
     const result = {
-      m2_growth: creditGrowthYoY,  // 중국 신용 증가율로 대체 (M2 YoY 대용)
-      m2_date: loans.date,
-      total_credit: loans.value || 0,
-      fx_reserves: reserves.value || 0,
-      liquidity_signal: determineChinaSignal(creditGrowthYoY),
-      timestamp: new Date().getTime()
+      ...baseData,
+      liquidity_signal: signal.signal,
+      score: signal.score,
+      interpretation: signal.interpretation
     };
 
-    cache.put(cacheKey, JSON.stringify(result), 3600);
-    Logger.log(`✅ 중국 유동성 데이터: 신용 증가율 ${creditGrowthYoY.toFixed(2)}% (M2 대용)`);
+    Logger.log(`✅ 중국 유동성: USD/CNY ${baseData.usdcny.toFixed(4)}, 변화 ${baseData.usdcny_change.toFixed(2)}%, ${signal.interpretation}`);
 
     return result;
 
   } catch (e) {
     Logger.log(`❌ 중국 데이터 오류: ${e.message}`);
-    return { m2_growth: 0, total_credit: 0, fx_reserves: 0, liquidity_signal: 'NO DATA' };
+    return { usdcny: 0, usdcny_change: 0, fx_reserves: 0, liquidity_signal: 'NO DATA', score: 0 };
   }
 }
 
-function determineChinaSignal(m2_growth) {
-  if (m2_growth > 12) {
-    return '🔴 과잉 유동성';
-  } else if (m2_growth > 10) {
-    return '✅ 적정 성장';
-  } else if (m2_growth > 8) {
-    return '⚖️ 중립';
-  } else if (m2_growth > 6) {
-    return '⚠️ 성장 둔화';
+/**
+ * DXY + CNY 조합 로직
+ * - DXY↓ + CNY 강세 → 확실한 긍정 (+10)
+ * - DXY↑ + CNY 약세 → 확실한 부정 (-10)
+ * - DXY↓ + CNY 약세 → 중국 자체 문제 (-5)
+ * - DXY↑ + CNY 강세 → 중국 선방 (+5)
+ */
+function determineChinaSignal(dxyChange, cnyChange) {
+  // dxyChange: 양수 = 달러 강세, 음수 = 달러 약세
+  // cnyChange: 양수 = 위안 약세 (USD/CNY 상승), 음수 = 위안 강세 (USD/CNY 하락)
+
+  const dxyWeak = dxyChange < -0.5;   // DXY 0.5% 이상 하락
+  const dxyStrong = dxyChange > 0.5;  // DXY 0.5% 이상 상승
+  const cnyStrong = cnyChange < -0.3; // CNY 0.3% 이상 강세
+  const cnyWeak = cnyChange > 0.3;    // CNY 0.3% 이상 약세
+
+  if (dxyWeak && cnyStrong) {
+    return { signal: '🚀 위안 강세 + 달러 약세', score: 10, interpretation: '글로벌 유동성 최적' };
+  } else if (dxyStrong && cnyWeak) {
+    return { signal: '🔴 위안 약세 + 달러 강세', score: -10, interpretation: '글로벌 유동성 악화' };
+  } else if (dxyWeak && cnyWeak) {
+    return { signal: '⚠️ 위안 약세 (중국 문제)', score: -5, interpretation: '중국 자체 리스크' };
+  } else if (dxyStrong && cnyStrong) {
+    return { signal: '✅ 위안 선방', score: 5, interpretation: '중국 상대적 강세' };
   } else {
-    return '🔵 유동성 부족';
+    return { signal: '⚖️ 중립', score: 0, interpretation: '뚜렷한 방향 없음' };
   }
 }
 
@@ -758,13 +790,14 @@ function detectMarketRegime() {
     const fedCutting = rateCycle.cycle.includes('CUTTING');
     const qtEnded = qtStatus.status === 'QE' || qtStatus.status === 'MILD_QE' || qtStatus.status === 'NEUTRAL';
 
+    // v4.1: 새 기본 가중치 (US 45%, DXY 25%, China 5%, Japan 10%, EM 15%)
     let regime = 'NORMAL';
     let weights = {
-      US: 0.40,
-      DXY: 0.20,
-      China: 0.20,
+      US: 0.45,
+      DXY: 0.25,
+      China: 0.05,
       Japan: 0.10,
-      EM: 0.10
+      EM: 0.15
     };
 
     // 국면 판단 로직
@@ -772,31 +805,31 @@ function detectMarketRegime() {
       // DXY 고변동성 국면: DXY 영향력 증가
       regime = 'DXY_VOLATILE';
       weights = {
-        US: 0.25,
-        DXY: 0.35,
-        China: 0.20,
+        US: 0.30,
+        DXY: 0.40,
+        China: 0.05,
         Japan: 0.10,
-        EM: 0.10
+        EM: 0.15
       };
     } else if (fedCutting && qtEnded) {
       // Fed 적극 완화 국면: 미국 요인 지배
       regime = 'FED_EASING';
       weights = {
-        US: 0.50,
-        DXY: 0.10,
-        China: 0.20,
+        US: 0.55,
+        DXY: 0.15,
+        China: 0.05,
         Japan: 0.10,
-        EM: 0.10
+        EM: 0.15
       };
     } else if (fedCutting) {
       // 금리 인하 사이클: 미국 요인 강화
       regime = 'RATE_CUTTING';
       weights = {
-        US: 0.45,
-        DXY: 0.15,
-        China: 0.20,
+        US: 0.50,
+        DXY: 0.20,
+        China: 0.05,
         Japan: 0.10,
-        EM: 0.10
+        EM: 0.15
       };
     }
 
@@ -815,7 +848,7 @@ function detectMarketRegime() {
     Logger.log(`❌ Market Regime 오류: ${e.message}`);
     return {
       regime: 'NORMAL',
-      weights: { US: 0.40, DXY: 0.20, China: 0.20, Japan: 0.10, EM: 0.10 }
+      weights: { US: 0.45, DXY: 0.25, China: 0.05, Japan: 0.10, EM: 0.15 }  // v4.1 가중치
     };
   }
 }
@@ -986,7 +1019,8 @@ function analyzeGlobalLiquidity() {
     const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
     const dxy_change = (dxy.value || 100) - (dxy_1w.value || 100);
 
-    const china = getChinaLiquidity();
+    // 중국: DXY 변화와 함께 분석 (DXY+CNY 조합 로직)
+    const china = getChinaLiquidity(dxy_change);
     const japan = getJapanLiquidity();
     const emFx = getEmergingMarketsFX();
 
@@ -1037,23 +1071,16 @@ function analyzeGlobalLiquidity() {
       usScore += 10;
     }
 
-    // 4. v4.0: Fed 정책 점수 추가 (동적 가중치 시 비중 증가)
-    usScore += fedPolicy.totalScore * 0.5; // Fed 정책의 50%를 US 점수에 반영
+    // 4. v4.0: Fed 정책 점수 추가
+    usScore += fedPolicy.totalScore * 0.5;
 
     // === 달러 요인 (v4.0: 맥락 기반 스코어링) ===
     const contextualDxy = getContextualDXYScore(dxy_change);
     dxyScore = contextualDxy.score;
 
-    // === 중국 요인 ===
-    if (china.m2_growth > 12) {
-      chinaScore += 20;
-    } else if (china.m2_growth > 10) {
-      chinaScore += 15;
-    } else if (china.m2_growth < 6) {
-      chinaScore -= 20;
-    } else if (china.m2_growth < 8) {
-      chinaScore -= 10;
-    }
+    // === 중국 요인 (v4.1: DXY+CNY 조합 로직, 5% 가중치) ===
+    // getChinaLiquidity에서 이미 DXY와 CNY 조합으로 점수 계산됨
+    chinaScore = china.score || 0;
 
     // === 일본 요인 ===
     if (japan.usdjpy > 155) {
@@ -1077,14 +1104,14 @@ function analyzeGlobalLiquidity() {
       emScore -= 10;
     }
 
-    // ============= v4.0: 동적 가중치 적용 =============
+    // ============= v4.1: 새 가중치 (US 45%, DXY 25%, China 5%, Japan 10%, EM 15%) =============
     const weights = marketRegime.weights;
     let liquidityScore = Math.round(
-      usScore * (weights.US / 0.40) +       // US 기본 40% 대비 조정
-      dxyScore * (weights.DXY / 0.20) +     // DXY 기본 20% 대비 조정
-      chinaScore * (weights.China / 0.20) + // China 기본 20% 대비 조정
+      usScore * (weights.US / 0.45) +       // US 기본 45% 대비 조정
+      dxyScore * (weights.DXY / 0.25) +     // DXY 기본 25% 대비 조정
+      chinaScore * (weights.China / 0.05) + // China 기본 5% 대비 조정
       japanScore * (weights.Japan / 0.10) + // Japan 기본 10% 대비 조정
-      emScore * (weights.EM / 0.10)         // EM 기본 10% 대비 조정
+      emScore * (weights.EM / 0.15)         // EM 기본 15% 대비 조정
     );
 
     // 최종 신호 결정 (7단계 확장 범위)
@@ -1126,9 +1153,9 @@ function analyzeGlobalLiquidity() {
       onRrp.value,
       dxy.value,
       dxy_change,
-      china.m2_growth,
-      china.total_credit,
-      china.fx_reserves,
+      china.usdcny,           // v4.1: USD/CNY 환율
+      china.usdcny_change,    // v4.1: CNY 주간 변화율
+      china.liquidity_signal, // v4.1: DXY+CNY 조합 신호
       japan.usdjpy,
       japan.jgb_10y,
       japan.us_jpy_spread,
@@ -1206,12 +1233,12 @@ function analyzeGlobalLiquidity() {
       recommendation: '오류 발생 - 데이터 확인 필요',
       regime: 'UNKNOWN',
       fedPolicy: null,
-      weights: { US: 0.40, DXY: 0.20, China: 0.20, Japan: 0.10, EM: 0.10 },
+      weights: { US: 0.45, DXY: 0.25, China: 0.05, Japan: 0.10, EM: 0.15 },  // v4.1 가중치
       componentScores: { us: 0, dxy: 0, china: 0, japan: 0, em: 0 },
       details: {
         us: { walcl: 0, walcl_wow: 0, tga: { current: 0, week_change: 0 }, onrrp: 0 },
         dxy: { level: 0, change: 0, contextual: null },
-        china: { m2_growth: 0, total_credit: 0, fx_reserves: 0 },
+        china: { usdcny: 0, usdcny_change: 0, fx_reserves: 0, score: 0 },  // v4.1 구조
         japan: { usdjpy: 0, jgb_10y: 0, us_jpy_spread: 0 },
         em: { usdkrw: 0, usdbrl: 0, strength_index: 0 }
       }
@@ -1231,7 +1258,7 @@ function setupGlobalSheet(sheet) {
     'TGA(M$)', 'TGA WoW',
     'ON RRP(M$)',
     'DXY', 'DXY WoW',
-    '중국 M2(%)', '중국 신용', '중국 FX',
+    'USD/CNY', 'CNY 변화(%)', '중국 신호',  // v4.1: DXY+CNY 조합
     'USD/JPY', 'JGB 10Y', 'US-JP 스프레드',
     'USD/KRW', 'USD/BRL', 'EM 강세지수',
     '유동성 점수', '신호', '투자 권장',
