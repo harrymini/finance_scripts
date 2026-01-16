@@ -1193,6 +1193,11 @@ function analyzeGlobalLiquidity() {
 }
 
 function setupGlobalSheet(sheet) {
+  if (!sheet) {
+    Logger.log('❌ setupGlobalSheet: sheet가 undefined입니다');
+    return;
+  }
+
   const headers = [
     '타임스탬프',
     'WALCL(M$)', 'WALCL WoW',
@@ -1310,9 +1315,15 @@ function getHistoryComparison() {
 
 function logGlobalHistory(analysis) {
   try {
+    // 유효성 검사
+    if (!analysis || !analysis.timestamp || !analysis.details) {
+      Logger.log('❌ logGlobalHistory: analysis 객체가 유효하지 않습니다');
+      return;
+    }
+
     const ss = SpreadsheetApp.getActive();
     let globalHistorySheet = ss.getSheetByName(CONFIG.GLOBAL_HISTORY_SHEET);
-    
+
     // Global_History 시트가 없으면 생성
     if (!globalHistorySheet) {
       globalHistorySheet = ss.insertSheet(CONFIG.GLOBAL_HISTORY_SHEET);
@@ -1333,33 +1344,41 @@ function logGlobalHistory(analysis) {
       globalHistorySheet.setFrozenRows(1);
       globalHistorySheet.setColumnWidth(1, 150);
     }
-    
+
+    // 안전한 값 추출 (undefined 방지)
+    const us = analysis.details.us || {};
+    const dxy = analysis.details.dxy || {};
+    const china = analysis.details.china || {};
+    const japan = analysis.details.japan || {};
+    const em = analysis.details.em || {};
+    const tga = us.tga || {};
+
     // 히스토리에 추가
     globalHistorySheet.appendRow([
       analysis.timestamp,
-      analysis.details.us.walcl,
-      analysis.details.us.walcl_wow,
-      analysis.details.us.tga.current,
-      analysis.details.us.tga.week_change,
-      analysis.details.us.onrrp,
-      analysis.details.dxy.level,
-      analysis.details.dxy.change,
-      analysis.details.china.m2_growth,
-      analysis.details.china.total_credit,
-      analysis.details.china.fx_reserves,
-      analysis.details.japan.usdjpy,
-      analysis.details.japan.jgb_10y,
-      analysis.details.japan.us_jpy_spread,
-      analysis.details.em.usdkrw,
-      analysis.details.em.usdbrl,
-      analysis.details.em.strength_index,
-      analysis.score,
-      analysis.signal,
-      analysis.recommendation
+      us.walcl || 0,
+      us.walcl_wow || 0,
+      tga.current || 0,
+      tga.week_change || 0,
+      us.onrrp || 0,
+      dxy.level || 0,
+      dxy.change || 0,
+      china.m2_growth || 0,
+      china.total_credit || 0,
+      china.fx_reserves || 0,
+      japan.usdjpy || 0,
+      japan.jgb_10y || 0,
+      japan.us_jpy_spread || 0,
+      em.usdkrw || 0,
+      em.usdbrl || 0,
+      em.strength_index || 0,
+      analysis.score || 0,
+      analysis.signal || 'N/A',
+      analysis.recommendation || 'N/A'
     ]);
-    
+
     Logger.log('✅ Global_History 기록 완료');
-    
+
   } catch (e) {
     Logger.log(`❌ Global_History 기록 오류: ${e.message}`);
   }
