@@ -3467,7 +3467,19 @@ function createDailyTrigger() {
 
 function clearAllCache() {
   const cache = CacheService.getScriptCache();
-  cache.removeAll();
+  const keys = [
+    'CHINA_LIQUIDITY',
+    'FRED_WALCL',
+    'FRED_WTREGEN',
+    'FRED_RRPONTSYD',
+    'FRED_DTWEXBGS',
+    'FRED_DEXCHUS',
+    'FRED_DEXJPUS',
+    'FRED_DEXKOUS',
+    'FRED_DEXBZUS',
+    'FRED_DEXMXUS'
+  ];
+  cache.removeAll(keys);
   SpreadsheetApp.getUi().alert('✅ 모든 캐시가 초기화되었습니다.');
 }
 
