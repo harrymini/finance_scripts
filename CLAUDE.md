@@ -632,7 +632,18 @@ checkGlobalAlerts()
 
 ## Version History
 
-**v3.1** (Current - 2025-11-13)
+**v4.0** (Current - 2026-01-16)
+- **MAJOR UPDATE**: Dynamic weighting system based on market regime
+- **NEW**: Fed policy tracking (QT/QE status, rate cycle, reserve balances, repo spread)
+- **NEW**: Market regime detection (DXY_VOLATILE, FED_EASING, RATE_CUTTING, NORMAL)
+- **NEW**: Contextual DXY scoring (DXY decline = positive during Fed easing)
+- **NEW**: Trend-based alerts (momentum surge/drop, trend slowdown/reversal, Fed policy shifts)
+- **NEW**: Fed policy check and Market regime check menu items
+- **ENHANCED**: Analysis return object includes regime, fedPolicy, weights, componentScores
+- **ENHANCED**: Global_Liquidity sheet now shows market regime
+- Added FRED IDs: FED_FUNDS_UPPER, FED_FUNDS_LOWER, RESERVE_BALANCES
+
+**v3.1** (2025-11-13)
 - **MAJOR UPDATE**: Granular 5-level scoring for all factors
 - **ENHANCED**: 7-level signal system (±80, ±50, ±20 thresholds)
 - **IMPROVED**: ON RRP now 5-level (excess liquidity as risk)
@@ -666,6 +677,6 @@ checkGlobalAlerts()
 
 ---
 
-**Last Updated**: 2025-11-13
-**Document Version**: 1.1
-**Code Version**: 3.1
+**Last Updated**: 2026-01-16
+**Document Version**: 1.2
+**Code Version**: 4.0
