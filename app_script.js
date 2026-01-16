@@ -44,9 +44,8 @@ const CONFIG = {
     // 달러 인덱스
     DXY: 'DTWEXBGS',
     
-    // 중국 지표
-    CHINA_M2_YOY: 'MABMM301CNM657S',
-    CHINA_LOAN: 'CRDQCNAPABIS',       // Updated: Total Credit to Private Non-Financial Sector (BIS)
+    // 중국 지표 (CHINA_M2_YOY 시리즈는 2018년 중단됨 - 신용 증가율로 대체)
+    CHINA_LOAN: 'CRDQCNAPABIS',       // Total Credit to Private Non-Financial Sector (BIS) - M2 대용
     CHINA_RESERVES: 'TRESEGCNM052N',
     
     // 일본 지표
@@ -281,33 +280,40 @@ function getChinaLiquidity() {
   try {
     const cache = CacheService.getScriptCache();
     const cacheKey = 'CHINA_LIQUIDITY';
-    
+
     const cached = cache.get(cacheKey);
     if (cached) {
       return JSON.parse(cached);
     }
-    
-    const m2_yoy = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_M2_YOY, false);
+
+    // 중국 신용 데이터 (현재 + 1년 전) - M2 YoY 시리즈가 2018년에 중단되어 신용 증가율로 대체
     const loans = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_LOAN, false);
+    const loans_1y = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.CHINA_LOAN, 365);
     const reserves = getFredData(CONFIG.GLOBAL_FRED_IDS.CHINA_RESERVES, false);
-    
+
+    // 신용 증가율 계산 (YoY %)
+    let creditGrowthYoY = 0;
+    if (loans.value && loans_1y.value && loans_1y.value > 0) {
+      creditGrowthYoY = ((loans.value - loans_1y.value) / loans_1y.value) * 100;
+    }
+
     const result = {
-      m2_growth: m2_yoy.value || 0,
-      m2_date: m2_yoy.date,
+      m2_growth: creditGrowthYoY,  // 중국 신용 증가율로 대체 (M2 YoY 대용)
+      m2_date: loans.date,
       total_credit: loans.value || 0,
       fx_reserves: reserves.value || 0,
-      liquidity_signal: determineChinaSignal(m2_yoy.value),
+      liquidity_signal: determineChinaSignal(creditGrowthYoY),
       timestamp: new Date().getTime()
     };
-    
+
     cache.put(cacheKey, JSON.stringify(result), 3600);
-    Logger.log(`✅ 중국 유동성 데이터: M2 YoY ${result.m2_growth}%`);
-    
+    Logger.log(`✅ 중국 유동성 데이터: 신용 증가율 ${creditGrowthYoY.toFixed(2)}% (M2 대용)`);
+
     return result;
-    
+
   } catch (e) {
     Logger.log(`❌ 중국 데이터 오류: ${e.message}`);
-    return { m2_growth: 0, total_credit: 0, liquidity_signal: 'NO DATA' };
+    return { m2_growth: 0, total_credit: 0, fx_reserves: 0, liquidity_signal: 'NO DATA' };
   }
 }
 
