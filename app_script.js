@@ -2285,11 +2285,11 @@ function checkGlobalAlerts() {
 
     // === 기존 개별 리스크 알림 ===
 
-    // 중국 리스크
-    if (analysis.details.china.m2_growth < 7) {
+    // 중국 리스크 (v4.1: DXY+CNY 조합 기반)
+    if (analysis.details.china.score < -5) {
       alerts.push({
         level: '🇨🇳 CHINA RISK',
-        message: '중국 유동성 경색',
+        message: `중국 유동성 악화 (${analysis.details.china.liquidity_signal})`,
         action: '신흥국/원자재 노출 축소'
       });
     }
@@ -2478,8 +2478,8 @@ function sendGlobalAlert(alerts, analysis, comparison) {
             <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.us.onrrp.toFixed(0)}M$</td>
           </tr>
           <tr>
-            <td style="border: 1px solid #ddd; padding: 8px;"><strong>중국 M2:</strong></td>
-            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.china.m2_growth.toFixed(1)}%${chinaM2Change}</td>
+            <td style="border: 1px solid #ddd; padding: 8px;"><strong>USD/CNY:</strong></td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${(analysis.details.china.usdcny || 0).toFixed(4)} (${(analysis.details.china.usdcny_change || 0) >= 0 ? '+' : ''}${(analysis.details.china.usdcny_change || 0).toFixed(2)}%)</td>
           </tr>
           <tr>
             <td style="border: 1px solid #ddd; padding: 8px;"><strong>USD/JPY:</strong></td>
@@ -2543,13 +2543,20 @@ function sendGlobalAlert(alerts, analysis, comparison) {
  * =============================================== */
 
 function checkChinaLiquidity() {
-  const china = getChinaLiquidity();
+  // v4.1: DXY 변화를 가져와서 조합 로직에 전달
+  const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY);
+  const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
+  const dxyChange = (dxy.value || 100) - (dxy_1w.value || 100);
+
+  const china = getChinaLiquidity(dxyChange);
   SpreadsheetApp.getUi().alert(
-    `🇨🇳 중국 유동성 현황\n\n` +
-    `M2 성장률: ${china.m2_growth.toFixed(1)}% YoY\n` +
-    `총 신용: ${(china.total_credit/1000).toFixed(0)}조 위안\n` +
-    `외환보유고: ${(china.fx_reserves/1000).toFixed(1)}조 달러\n\n` +
-    `신호: ${china.liquidity_signal}`
+    `🇨🇳 중국 유동성 현황 (v4.1)\n\n` +
+    `USD/CNY: ${(china.usdcny || 0).toFixed(4)}\n` +
+    `CNY 변화율: ${(china.usdcny_change || 0) >= 0 ? '+' : ''}${(china.usdcny_change || 0).toFixed(2)}%\n` +
+    `외환보유고: ${((china.fx_reserves || 0)/1000).toFixed(1)}조 달러\n\n` +
+    `DXY+CNY 신호: ${china.liquidity_signal}\n` +
+    `해석: ${china.interpretation || 'N/A'}\n` +
+    `점수 기여: ${china.score > 0 ? '+' : ''}${china.score || 0}`
   );
 }
 
@@ -3062,9 +3069,9 @@ function createGlobalDashboard() {
             <td>${analysis.details.us.walcl_wow > 0 ? '✅' : '⚠️'}</td>
           </tr>
           <tr>
-            <td>중국 M2 성장률</td>
-            <td>${analysis.details.china.m2_growth.toFixed(1)}%</td>
-            <td>YoY</td>
+            <td>USD/CNY (위안화)</td>
+            <td>${(analysis.details.china.usdcny || 0).toFixed(4)}</td>
+            <td>${(analysis.details.china.usdcny_change || 0) >= 0 ? '+' : ''}${(analysis.details.china.usdcny_change || 0).toFixed(2)}%</td>
             <td>${analysis.details.china.liquidity_signal}</td>
           </tr>
           <tr>
@@ -3085,7 +3092,7 @@ function createGlobalDashboard() {
       <div class="section">
         <h3>리스크 요인</h3>
         <ul>
-          ${analysis.details.china.m2_growth < 8 ? '<li>⚠️ 중국 유동성 둔화</li>' : ''}
+          ${(analysis.details.china.score || 0) < 0 ? '<li>⚠️ 중국 유동성 악화 (' + analysis.details.china.liquidity_signal + ')</li>' : ''}
           ${analysis.details.japan.usdjpy > 150 ? '<li>⚠️ 엔캐리 언와인드 리스크</li>' : ''}
           ${Math.abs(analysis.details.dxy.change) > 2 ? '<li>⚠️ 달러 급변동</li>' : ''}
           ${analysis.details.us.tga.current < 200000 ? '<li>⚠️ TGA 잔고 부족</li>' : ''}
@@ -3583,9 +3590,12 @@ function testAllSystems() {
   });
 
   // 2. 글로벌 데이터
-  Logger.log('\n--- 글로벌 데이터 테스트 ---');
-  const china = getChinaLiquidity();
-  Logger.log(`중국 M2: ${china.m2_growth}%`);
+  Logger.log('\n--- 글로벌 데이터 테스트 (v4.1) ---');
+  const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY);
+  const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
+  const dxyChange = (dxy.value || 100) - (dxy_1w.value || 100);
+  const china = getChinaLiquidity(dxyChange);
+  Logger.log(`USD/CNY: ${china.usdcny}, 변화율: ${china.usdcny_change}%, 신호: ${china.liquidity_signal}`);
 
   const japan = getJapanLiquidity();
   Logger.log(`USD/JPY: ${japan.usdjpy}`);
