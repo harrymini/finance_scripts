@@ -32,7 +32,7 @@ const CONFIG = {
 
   // 미국 지표
   FRED_IDS: {
-    SOFR: 'SOFRINDEX',
+    SOFR: 'SOFR',
     EFFR: 'EFFR',
     IORB: 'IORB',
     ON_RRP: 'RRPONTSYD',
@@ -74,123 +74,87 @@ const CONFIG = {
  * 1) FRED 데이터 수집 (기본 + 히스토리)
  * =============================================== */
 
+function parseFredObservations(csv) {
+  const byDate = new Map();
+  for (const line of csv.split(/\r?\n/)) {
+    const [dateField, valueField] = line.split(',');
+    const date = dateField.trim();
+    const raw = valueField === undefined ? '' : valueField.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !raw) continue;
+    const time = Date.parse(date + 'T00:00:00Z');
+    if (!Number.isFinite(time) || new Date(time).toISOString().slice(0, 10) !== date) continue;
+    const value = Number(raw);
+    if (Number.isFinite(value)) byDate.set(date, { date, value });
+  }
+  return Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function getFredObservations(fredId) {
+  try {
+    const response = UrlFetchApp.fetch(`${CONFIG.FRED_BASE}?id=${encodeURIComponent(fredId)}`, {
+      muteHttpExceptions: true,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    if (response.getResponseCode() !== 200) throw new Error(`HTTP ${response.getResponseCode()}`);
+    return parseFredObservations(response.getContentText());
+  } catch (e) {
+    Logger.log(`❌ FRED 조회 실패 [${fredId}]: ${e.message}`);
+    return [];
+  }
+}
+
 function getFredData(fredId, useCache = true) {
-  const cacheKey = `FRED_${fredId}`;
   const cache = CacheService.getScriptCache();
-  
+  const cacheKey = `FRED_V2_${fredId}`;
   if (useCache) {
-    const cached = cache.get(cacheKey);
-    if (cached) {
-      return JSON.parse(cached);
+    try {
+      const cached = JSON.parse(cache.get(cacheKey));
+      if (cached && Number.isFinite(cached.value)) return cached;
+    } catch (e) {
+      Logger.log(`⚠️ FRED 캐시 읽기 오류 [${fredId}]: ${e.message}`);
     }
   }
-  
+  const rows = getFredObservations(fredId);
+  if (!rows.length) return { date: null, value: null, fredId };
+  const result = { ...rows[rows.length - 1], timestamp: Date.now(), fredId };
   try {
-    const url = `${CONFIG.FRED_BASE}?id=${fredId}`;
-    const response = UrlFetchApp.fetch(url, {
-      muteHttpExceptions: true,
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      timeout: 15000
-    });
-    
-    if (response.getResponseCode() !== 200) {
-      throw new Error(`FRED API 오류: ${response.getResponseCode()}`);
-    }
-    
-    const csv = response.getContentText();
-    const lines = csv.trim().split('\n');
-    
-    if (lines.length < 2) {
-      throw new Error(`FRED 데이터가 없음: ${fredId}`);
-    }
-    
-    const lastLine = lines[lines.length - 1];
-    const [date, value] = lastLine.split(',');
-    
-    const result = {
-      date: date.trim(),
-      value: parseFloat(value.trim()),
-      timestamp: new Date().getTime(),
-      fredId: fredId
-    };
-    
     cache.put(cacheKey, JSON.stringify(result), Math.floor(CONFIG.CACHE_TIME / 1000));
-    
-    return result;
   } catch (e) {
-    Logger.log(`❌ FRED 수집 실패 [${fredId}]: ${e.message}`);
-    return { value: null, error: e.message, fredId: fredId };
+    Logger.log(`⚠️ FRED 캐시 저장 오류 [${fredId}]: ${e.message}`);
   }
+  return result;
 }
 
-function getFredDataHistorical(fredId, daysAgo) {
-  try {
-    const url = `${CONFIG.FRED_BASE}?id=${fredId}`;
-    const response = UrlFetchApp.fetch(url, {
-      muteHttpExceptions: true,
-      timeout: 15000
-    });
-
-    if (response.getResponseCode() !== 200) {
-      return { value: 0 };
-    }
-
-    const csv = response.getContentText();
-    const lines = csv.trim().split('\n');
-
-    const targetIndex = Math.max(lines.length - Math.ceil(daysAgo/5) - 1, 1);
-
-    if (targetIndex < lines.length) {
-      const [date, value] = lines[targetIndex].split(',');
-      return {
-        date: date.trim(),
-        value: parseFloat(value.trim())
-      };
-    }
-
-    return { value: 0 };
-
-  } catch (e) {
-    Logger.log(`❌ Historical 데이터 오류: ${e.message}`);
-    return { value: 0 };
+function getFredDataHistorical(fredId, daysAgo, anchorDate) {
+  const rows = getFredObservations(fredId);
+  if (!rows.length || !Number.isInteger(daysAgo) || daysAgo < 1) return { date: null, value: null };
+  const anchor = Date.parse((anchorDate || rows[rows.length - 1].date) + 'T00:00:00Z');
+  if (!Number.isFinite(anchor)) return { date: null, value: null };
+  const target = new Date(anchor - daysAgo * 86400000).toISOString().slice(0, 10);
+  const oldest = new Date(anchor - (daysAgo + 7) * 86400000).toISOString().slice(0, 10);
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].date <= target && rows[i].date >= oldest) return rows[i];
   }
+  return { date: null, value: null };
 }
 
-/**
- * v4.1: 직전 발표 데이터 조회 (주간 데이터용)
- * - WALCL, TGA 등 주간 데이터의 WoW 계산에 사용
- * - 실행 날짜와 무관하게 항상 직전 발표값 반환
- */
 function getPreviousRelease(fredId) {
-  try {
-    const url = `${CONFIG.FRED_BASE}?id=${fredId}`;
-    const response = UrlFetchApp.fetch(url, {
-      muteHttpExceptions: true,
-      timeout: 15000
-    });
+  const rows = getFredObservations(fredId);
+  return rows.length >= 2 ? rows[rows.length - 2] : { date: null, value: null };
+}
 
-    if (response.getResponseCode() !== 200) {
-      return { value: 0, date: null };
-    }
+function observationDelta(current, previous) {
+  return Number.isFinite(current.value) && Number.isFinite(previous.value)
+    ? current.value - previous.value : null;
+}
 
-    const csv = response.getContentText();
-    const lines = csv.trim().split('\n');
+function absoluteObservationDelta(current, previous) {
+  const delta = observationDelta(current, previous);
+  return Number.isFinite(delta) ? Math.abs(delta) : null;
+}
 
-    // 마지막에서 두 번째 데이터 (직전 발표)
-    if (lines.length >= 3) {
-      const [date, value] = lines[lines.length - 2].split(',');
-      return {
-        date: date.trim(),
-        value: parseFloat(value.trim())
-      };
-    }
-
-    return { value: 0, date: null };
-
-  } catch (e) {
-    Logger.log(`❌ Previous Release 조회 오류 [${fredId}]: ${e.message}`);
-    return { value: 0, date: null };
-  }
+function formatObservation(value, digits = 2, signed = false) {
+  return Number.isFinite(value) ? (signed && value > 0 ? '+' : '') + value.toFixed(digits) : '데이터 없음';
 }
 
 /**
@@ -381,6 +345,9 @@ function getChinaLiquidity(dxyChange) {
  * - DXY↑ + CNY 강세 → 중국 선방 (+5)
  */
 function determineChinaSignal(dxyChange, cnyChange) {
+  if (!Number.isFinite(dxyChange) || !Number.isFinite(cnyChange)) {
+    return { signal: '비교 데이터 없음', score: 0, interpretation: '달러·위안 조합 판정 보류' };
+  }
   // dxyChange: 양수 = 달러 강세, 음수 = 달러 약세
   // cnyChange: 양수 = 위안 약세 (USD/CNY 상승), 음수 = 위안 강세 (USD/CNY 하락)
 
@@ -770,8 +737,11 @@ function getRepoSpreadStatus() {
     const sofr = getFredData(CONFIG.FRED_IDS.SOFR, false);
     const iorb = getFredData(CONFIG.FRED_IDS.IORB, false);
 
-    const sofrRate = sofr.value || 0;
-    const iorbRate = iorb.value || 0;
+    if (!Number.isFinite(sofr.value) || !Number.isFinite(iorb.value)) {
+      return { status: 'UNKNOWN', score: 0, signal: 'NO DATA', spread: null };
+    }
+    const sofrRate = sofr.value;
+    const iorbRate = iorb.value;
     const spread = (sofrRate - iorbRate) * 100; // bp 단위
 
     let status = 'NORMAL';
@@ -818,11 +788,11 @@ function detectMarketRegime() {
   try {
     // DXY 변동성 계산 (최근 30일 변화)
     const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY, false);
-    const dxy_1m = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 30);
-    const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
+    const dxy_1m = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 30, dxy.date);
+    const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7, dxy.date);
 
-    const dxyChange1w = Math.abs((dxy.value || 100) - (dxy_1w.value || 100));
-    const dxyChange1m = Math.abs((dxy.value || 100) - (dxy_1m.value || 100));
+    const dxyChange1w = absoluteObservationDelta(dxy, dxy_1w);
+    const dxyChange1m = absoluteObservationDelta(dxy, dxy_1m);
 
     // Fed 정책 상태
     const rateCycle = getRateCycleStatus();
@@ -842,7 +812,8 @@ function detectMarketRegime() {
     };
 
     // 국면 판단 로직
-    if (dxyChange1w > 2 || dxyChange1m > 5) {
+    if ((Number.isFinite(dxyChange1w) && dxyChange1w > 2) ||
+        (Number.isFinite(dxyChange1m) && dxyChange1m > 5)) {
       // DXY 고변동성 국면: DXY 영향력 증가
       regime = 'DXY_VOLATILE';
       weights = {
@@ -874,7 +845,7 @@ function detectMarketRegime() {
       };
     }
 
-    Logger.log(`✅ Market Regime: ${regime}, DXY 변동성: 1w ${dxyChange1w.toFixed(2)}, 1m ${dxyChange1m.toFixed(2)}`);
+    Logger.log(`✅ Market Regime: ${regime}, DXY 변동성: 1w ${formatObservation(dxyChange1w)}, 1m ${formatObservation(dxyChange1m)}`);
 
     return {
       regime: regime,
@@ -901,6 +872,7 @@ function detectMarketRegime() {
  * @returns {Object} 맥락 기반 점수
  */
 function getContextualDXYScore(dxyChange) {
+  if (!Number.isFinite(dxyChange)) return { score: 0, interpretation: '비교 데이터 없음', dxyChange: null, fedContext: 'UNKNOWN' };
   const rateCycle = getRateCycleStatus();
   const fedCutting = rateCycle.cycle.includes('CUTTING');
 
@@ -1057,8 +1029,8 @@ function analyzeGlobalLiquidity() {
     const onRrp = getFredData(CONFIG.FRED_IDS.ON_RRP);
 
     const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY);
-    const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);  // 일간 데이터 - 7일 전
-    const dxy_change = (dxy.value || 100) - (dxy_1w.value || 100);
+    const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7, dxy.date);  // 일간 데이터 - 7일 전
+    const dxy_change = observationDelta(dxy, dxy_1w);
 
     // 중국: DXY 변화와 함께 분석 (DXY+CNY 조합 로직)
     const china = getChinaLiquidity(dxy_change);
@@ -1464,8 +1436,8 @@ function logGlobalHistory(analysis) {
       tga.current || 0,
       tga.week_change || 0,
       us.onrrp || 0,
-      dxy.level || 0,
-      dxy.change || 0,
+      Number.isFinite(dxy.level) ? dxy.level : '',
+      Number.isFinite(dxy.change) ? dxy.change : '',
       china.usdcny || 0,           // v4.1: USD/CNY
       china.usdcny_change || 0,    // v4.1: CNY 변화율
       china.liquidity_signal || 'N/A',  // v4.1: 중국 신호
@@ -2305,10 +2277,10 @@ function checkGlobalAlerts() {
     }
 
     // 달러 급변
-    if (Math.abs(analysis.details.dxy.change) > 2) {
+    if (Number.isFinite(analysis.details.dxy.change) && Math.abs(analysis.details.dxy.change) > 2) {
       alerts.push({
         level: '💵 DXY MOVE',
-        message: `달러 ${analysis.details.dxy.change > 0 ? '급등' : '급락'} (${analysis.details.dxy.change.toFixed(2)})`,
+        message: `달러 ${analysis.details.dxy.change > 0 ? '급등' : '급락'} (${formatObservation(analysis.details.dxy.change)})`,
         action: analysis.details.dxy.change > 0 ? 'Risk-OFF 준비' : 'Risk-ON 기회'
       });
     }
@@ -2442,7 +2414,7 @@ function sendGlobalAlert(alerts, analysis, comparison) {
     };
 
     // 비교 데이터가 있는 경우 변화량 계산
-    const dxyChange = comparison ? formatChange(comparison.dxy.change) : formatChange(analysis.details.dxy.change);
+    const dxyChange = formatObservation(analysis.details.dxy.change, 2, true);
     const usdjpyChange = comparison ? formatChange(comparison.usdjpy.change) : '';
     const chinaM2Change = comparison ? formatChange(comparison.chinaM2.change) : '';
     const scoreChange = comparison ? formatChange(comparison.score.change) : '';
@@ -2463,8 +2435,8 @@ function sendGlobalAlert(alerts, analysis, comparison) {
         <h3>📊 주요 지표</h3>
         <table style="border-collapse: collapse; width: 100%; background: white;">
           <tr>
-            <td style="border: 1px solid #ddd; padding: 8px;"><strong>DXY:</strong></td>
-            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.dxy.level.toFixed(2)}${dxyChange}</td>
+            <td style="border: 1px solid #ddd; padding: 8px;"><strong>광의 달러지수 (FRED DTWEXBGS):</strong></td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${formatObservation(analysis.details.dxy.level)} (7일 변화: ${dxyChange})</td>
           </tr>
           <tr>
             <td style="border: 1px solid #ddd; padding: 8px;"><strong>WALCL WoW:</strong></td>
@@ -2546,8 +2518,8 @@ function sendGlobalAlert(alerts, analysis, comparison) {
 function checkChinaLiquidity() {
   // v4.1: DXY 변화를 가져와서 조합 로직에 전달
   const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY);
-  const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
-  const dxyChange = (dxy.value || 100) - (dxy_1w.value || 100);
+  const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7, dxy.date);
+  const dxyChange = observationDelta(dxy, dxy_1w);
 
   const china = getChinaLiquidity(dxyChange);
   SpreadsheetApp.getUi().alert(
@@ -2586,20 +2558,20 @@ function checkTGADetail() {
 
 function checkDXYTrend() {
   const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY);
-  const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
-  const dxy_1m = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 30);
+  const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7, dxy.date);
+  const dxy_1m = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 30, dxy.date);
 
-  const weekChange = (dxy.value - dxy_1w.value).toFixed(2);
-  const monthChange = (dxy.value - dxy_1m.value).toFixed(2);
+  const weekChange = observationDelta(dxy, dxy_1w);
+  const monthChange = observationDelta(dxy, dxy_1m);
 
   // v4.0: 맥락 기반 DXY 해석 추가
-  const contextualDxy = getContextualDXYScore(parseFloat(weekChange));
+  const contextualDxy = getContextualDXYScore(weekChange);
 
   SpreadsheetApp.getUi().alert(
     `💵 달러 인덱스 (DXY) 추세\n\n` +
-    `현재: ${dxy.value.toFixed(2)}\n` +
-    `주간 변화: ${weekChange > 0 ? '+' : ''}${weekChange}\n` +
-    `월간 변화: ${monthChange > 0 ? '+' : ''}${monthChange}\n\n` +
+    `현재: ${formatObservation(dxy.value)}\n` +
+    `주간 변화: ${formatObservation(weekChange, 2, true)}\n` +
+    `월간 변화: ${formatObservation(monthChange, 2, true)}\n\n` +
     `맥락 해석: ${contextualDxy.interpretation}\n` +
     `(Fed 상태: ${contextualDxy.fedContext})`
   );
@@ -2636,7 +2608,7 @@ function checkFedPolicy() {
       `점수 기여: ${reserves.score > 0 ? '+' : ''}${reserves.score}\n\n` +
       `--- Repo 스프레드 ---\n` +
       `상태: ${repo.status} (${repo.signal})\n` +
-      `SOFR-IORB: ${repo.spread.toFixed(1)}bp\n` +
+      `SOFR-IORB: ${formatObservation(repo.spread, 1)}bp\n` +
       `점수 기여: ${repo.score > 0 ? '+' : ''}${repo.score}`;
 
     SpreadsheetApp.getUi().alert(message);
@@ -2661,8 +2633,8 @@ function checkMarketRegime() {
       `📊 시장 국면 분석 (v4.0)\n\n` +
       `=== 현재 국면: ${regime.regime} ===\n\n` +
       `--- DXY 변동성 ---\n` +
-      `1주일: ${regime.dxyVolatility1w.toFixed(2)}pt\n` +
-      `1개월: ${regime.dxyVolatility1m.toFixed(2)}pt\n\n` +
+      `1주일: ${formatObservation(regime.dxyVolatility1w)}pt\n` +
+      `1개월: ${formatObservation(regime.dxyVolatility1m)}pt\n\n` +
       `--- Fed 상태 ---\n` +
       `금리 인하 중: ${regime.fedCutting ? '✅ 예' : '❌ 아니오'}\n` +
       `QT 종료: ${regime.qtEnded ? '✅ 예' : '❌ 아니오'}\n\n` +
@@ -3077,9 +3049,9 @@ function createGlobalDashboard() {
           </tr>
           <tr>
             <td>DXY (달러지수)</td>
-            <td>${analysis.details.dxy.level.toFixed(2)}</td>
-            <td>${analysis.details.dxy.change > 0 ? '+' : ''}${analysis.details.dxy.change.toFixed(2)}</td>
-            <td>${analysis.details.dxy.change < -1 ? '✅' : analysis.details.dxy.change > 1 ? '⚠️' : '⚖️'}</td>
+            <td>${formatObservation(analysis.details.dxy.level)}</td>
+            <td>${formatObservation(analysis.details.dxy.change, 2, true)}</td>
+            <td>${!Number.isFinite(analysis.details.dxy.change) ? '미확인' : analysis.details.dxy.change < -1 ? '✅' : analysis.details.dxy.change > 1 ? '⚠️' : '⚖️'}</td>
           </tr>
           <tr>
             <td>WALCL (연준자산)</td>
@@ -3486,18 +3458,8 @@ function createDailyTrigger() {
 
 function clearAllCache() {
   const cache = CacheService.getScriptCache();
-  const keys = [
-    'CHINA_LIQUIDITY',
-    'FRED_WALCL',
-    'FRED_WTREGEN',
-    'FRED_RRPONTSYD',
-    'FRED_DTWEXBGS',
-    'FRED_DEXCHUS',
-    'FRED_DEXJPUS',
-    'FRED_DEXKOUS',
-    'FRED_DEXBZUS',
-    'FRED_DEXMXUS'
-  ];
+  const fredIds = new Set([...Object.values(CONFIG.FRED_IDS), ...Object.values(CONFIG.GLOBAL_FRED_IDS), 'SOFRINDEX']);
+  const keys = ['CHINA_LIQUIDITY', ...Array.from(fredIds, id => 'FRED_V2_' + id)];
   cache.removeAll(keys);
   SpreadsheetApp.getUi().alert('✅ 모든 캐시가 초기화되었습니다.');
 }
@@ -3611,8 +3573,8 @@ function testAllSystems() {
   // 2. 글로벌 데이터
   Logger.log('\n--- 글로벌 데이터 테스트 (v4.1) ---');
   const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY);
-  const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7);
-  const dxyChange = (dxy.value || 100) - (dxy_1w.value || 100);
+  const dxy_1w = getFredDataHistorical(CONFIG.GLOBAL_FRED_IDS.DXY, 7, dxy.date);
+  const dxyChange = observationDelta(dxy, dxy_1w);
   const china = getChinaLiquidity(dxyChange);
   Logger.log(`USD/CNY: ${china.usdcny}, 변화율: ${china.usdcny_change}%, 신호: ${china.liquidity_signal}`);
 
@@ -3650,7 +3612,7 @@ function testAllSystems() {
   // 6. v4.0: 맥락 기반 DXY 해석 테스트
   if (analysis.details.dxy.contextual) {
     Logger.log('\n--- 맥락 기반 DXY 해석 (v4.0) ---');
-    Logger.log(`DXY 변화: ${analysis.details.dxy.change.toFixed(2)}`);
+    Logger.log(`DXY 변화: ${formatObservation(analysis.details.dxy.change)}`);
     Logger.log(`맥락 해석: ${analysis.details.dxy.contextual.interpretation}`);
     Logger.log(`Fed 맥락: ${analysis.details.dxy.contextual.fedContext}`);
   }
