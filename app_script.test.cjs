@@ -55,3 +55,33 @@ test('dollar regime only uses finite comparisons; SOFR config is a rate', () => 
   ctx.getFredData = id => ({value:id === 'SOFR' ? null : 3.65});
   assert.equal(ctx.getRepoSpreadStatus().status, 'UNKNOWN');
 });
+
+
+test('11/18 FRED weekly fixture preserves dates and million-dollar changes in one fetch per series', () => {
+  const walclRows = 'DATE,WALCL\n2026-11-18,6741452\n2026-11-11,6758867\n2026-11-25,.';
+  const tgaRows = 'DATE,WTREGEN\n2026-11-11,914370\n2026-11-18,916613';
+  const walcl = app({data:walclRows});
+  const tga = app({data:tgaRows});
+  const a = walcl.ctx.getWALCLWithHistory();
+  const b = tga.ctx.getTGAAnalysis();
+  assert.equal(a.wow, -17415);
+  assert.equal(b.week_change, 2243);
+  assert.equal(a.current.date, '2026-11-18');
+  assert.equal(b.previous_date, '2026-11-11');
+  assert.equal(walcl.calls.length, 1);
+  assert.equal(tga.calls.length, 1);
+  assert.match(tga.ctx.formatWeeklyFredMove(b.week_change, b.observation_date, b.previous_date), /\+2243백만 달러 \(2026-11-11 → 2026-11-18\)/);
+});
+test('weekly snapshots reject an absent or skipped baseline, and keep a genuine zero', () => {
+  const missing = app({data:'DATE,WTREGEN\n2026-11-04,957175\n2026-11-11,.\n2026-11-18,916613'});
+  const tga = missing.ctx.getTGAAnalysis();
+  assert.equal(tga.current, 916613);
+  assert.equal(tga.week_change, null);
+  assert.match(missing.ctx.formatWeeklyFredMove(tga.week_change, tga.observation_date, tga.previous_date), /데이터 없음/);
+  const flat = app({data:'DATE,WTREGEN\n2026-11-11,0\n2026-11-18,0'});
+  assert.equal(flat.ctx.getTGAAnalysis().week_change, 0);
+  const outage = app({status:503});
+  assert.equal(outage.ctx.getQTStatus().status, 'UNKNOWN');
+  assert.equal(outage.ctx.getTGAAnalysis().current, null);
+  assert.equal(outage.ctx.getTGAAnalysis().debt_ceiling_risk, '데이터 없음');
+});
