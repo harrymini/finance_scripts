@@ -143,6 +143,28 @@ function getPreviousRelease(fredId) {
   return rows.length >= 2 ? rows[rows.length - 2] : { date: null, value: null };
 }
 
+function getWeeklyFredSnapshot(fredId) {
+  const rows = getFredObservations(fredId);
+  const missing = { date: null, value: null };
+  const current = rows[rows.length - 1] || missing;
+  if (!current.date) return { current, previous: missing, monthAgo: missing, wow: null, monthChange: null };
+  const anchor = Date.parse(current.date + 'T00:00:00Z');
+  const cut = days => new Date(anchor - days * 86400000).toISOString().slice(0, 10);
+  // WALCL and WTREGEN are Wednesday levels. Never pass a gap off as WoW.
+  const previous = rows.find(row => row.date === cut(7)) || missing;
+  const monthAgo = rows.slice().reverse().find(row => row.date <= cut(30) && row.date >= cut(37)) || missing;
+  return { current, previous, monthAgo, wow: observationDelta(current, previous), monthChange: observationDelta(current, monthAgo) };
+}
+
+function formatWeeklyFredMove(value, currentDate, previousDate) {
+  if (!Number.isFinite(value)) return currentDate ? `데이터 없음 (최신 관측: ${currentDate})` : '데이터 없음';
+  return `${formatObservation(value, 0, true)}백만 달러 (${previousDate} → ${currentDate})`;
+}
+
+function formatBalance(value, divisor, unit, digits, signed = false) {
+  return Number.isFinite(value) ? formatObservation(value / divisor, digits, signed) + unit : '데이터 없음';
+}
+
 function observationDelta(current, previous) {
   return Number.isFinite(current.value) && Number.isFinite(previous.value)
     ? current.value - previous.value : null;
@@ -481,36 +503,21 @@ function determineCarryRisk(usdjpy, spread) {
  * 5) TGA 상세 분석
  * =============================================== */
 
-function getTGAAnalysis() {
-  try {
-    const tga = getFredData(CONFIG.FRED_IDS.TGA, false);
-    const tga_prev = getPreviousRelease(CONFIG.FRED_IDS.TGA);  // v4.1: 직전 발표값
-    const tga_1m = getFredDataHistorical(CONFIG.FRED_IDS.TGA, 30);
-
-    const current = tga.value || 0;
-    const prevRelease = tga_prev.value || current;  // 직전 주 발표값
-    const monthAgo = tga_1m.value || current;
-
-    const weekChange = current - prevRelease;  // v4.1: 직전 발표값 기준
-    const monthChange = current - monthAgo;
-
-    Logger.log(`✅ TGA: 현재 ${current}, 직전 ${prevRelease}, WoW ${weekChange}`);
-
-    return {
-      current: current,
-      week_change: weekChange,
-      month_change: monthChange,
-      liquidity_impact: determineTGAImpact(weekChange, monthChange),
-      debt_ceiling_risk: checkDebtCeilingRisk(current)
-    };
-
-  } catch (e) {
-    Logger.log(`❌ TGA 분석 오류: ${e.message}`);
-    return { current: 0, week_change: 0, liquidity_impact: 'NO DATA' };
-  }
+function getTGAAnalysis(snapshot = getWeeklyFredSnapshot(CONFIG.FRED_IDS.TGA)) {
+  const { current, previous, wow, monthChange } = snapshot;
+  return {
+    current: current.value,
+    observation_date: current.date,
+    previous_date: previous.date,
+    week_change: wow,
+    month_change: monthChange,
+    liquidity_impact: determineTGAImpact(wow, monthChange),
+    debt_ceiling_risk: checkDebtCeilingRisk(current.value)
+  };
 }
 
 function determineTGAImpact(weekChange, monthChange) {
+  if (!Number.isFinite(monthChange)) return '데이터 없음';
   if (monthChange < -100000) {
     return '🚀 대규모 유동성 공급';
   } else if (monthChange < -50000) {
@@ -525,6 +532,7 @@ function determineTGAImpact(weekChange, monthChange) {
 }
 
 function checkDebtCeilingRisk(tga_balance) {
+  if (!Number.isFinite(tga_balance)) return '데이터 없음';
   if (tga_balance < 100000) {
     return '🔴 부채한도 리스크';
   } else if (tga_balance < 200000) {
@@ -543,14 +551,11 @@ function checkDebtCeilingRisk(tga_balance) {
  * WALCL 월간 변화로 QT/QE 상태 판단
  * @returns {Object} QT/QE 상태 및 점수
  */
-function getQTStatus() {
+function getQTStatus(snapshot = getWeeklyFredSnapshot(CONFIG.FRED_IDS.WALCL)) {
   try {
-    const walcl = getFredData(CONFIG.FRED_IDS.WALCL, false);
-    const walcl_1m = getFredDataHistorical(CONFIG.FRED_IDS.WALCL, 30);
-
-    const current = walcl.value || 0;
-    const monthAgo = walcl_1m.value || current;
-    const monthChange = current - monthAgo;
+    const current = snapshot.current.value;
+    const monthChange = snapshot.monthChange;
+    if (!Number.isFinite(monthChange)) return { status: 'UNKNOWN', score: 0, signal: 'NO DATA', monthChange: null, current };
 
     let status = 'NEUTRAL';
     let score = 0;
@@ -586,7 +591,7 @@ function getQTStatus() {
 
   } catch (e) {
     Logger.log(`❌ QT Status 오류: ${e.message}`);
-    return { status: 'UNKNOWN', score: 0, signal: 'NO DATA', monthChange: 0 };
+    return { status: 'UNKNOWN', score: 0, signal: 'NO DATA', monthChange: null };
   }
 }
 
@@ -784,7 +789,7 @@ function getRepoSpreadStatus() {
  * DXY 변동성, Fed 정책 상태 기반으로 시장 국면 판단
  * @returns {Object} 시장 국면 및 가중치
  */
-function detectMarketRegime() {
+function detectMarketRegime(walclSnapshot) {
   try {
     // DXY 변동성 계산 (최근 30일 변화)
     const dxy = getFredData(CONFIG.GLOBAL_FRED_IDS.DXY, false);
@@ -796,7 +801,7 @@ function detectMarketRegime() {
 
     // Fed 정책 상태
     const rateCycle = getRateCycleStatus();
-    const qtStatus = getQTStatus();
+    const qtStatus = getQTStatus(walclSnapshot);
 
     const fedCutting = rateCycle.cycle.includes('CUTTING');
     const qtEnded = qtStatus.status === 'QE' || qtStatus.status === 'MILD_QE' || qtStatus.status === 'NEUTRAL';
@@ -927,8 +932,8 @@ function getContextualDXYScore(dxyChange) {
  * QT/QE, 금리 사이클, Reserve, Repo 스프레드 통합
  * @returns {Object} 종합 Fed 정책 점수 및 상태
  */
-function analyzeFedPolicy() {
-  const qtStatus = getQTStatus();
+function analyzeFedPolicy(walclSnapshot) {
+  const qtStatus = getQTStatus(walclSnapshot);
   const rateCycle = getRateCycleStatus();
   const reserves = getReserveBalancesStatus();
   const repoSpread = getRepoSpreadStatus();
@@ -1019,12 +1024,13 @@ function analyzeGlobalLiquidity() {
     }
 
     // ============= v4.0: 시장 국면 및 동적 가중치 감지 =============
-    const marketRegime = detectMarketRegime();
-    const fedPolicy = analyzeFedPolicy();
+    const walclSnapshot = getWeeklyFredSnapshot(CONFIG.FRED_IDS.WALCL);
+    const marketRegime = detectMarketRegime(walclSnapshot);
+    const fedPolicy = analyzeFedPolicy(walclSnapshot);
 
     // 데이터 수집 (v4.1: 주간 데이터는 직전 발표값과 비교)
-    const walcl = getFredData(CONFIG.FRED_IDS.WALCL);
-    const walcl_prev = getPreviousRelease(CONFIG.FRED_IDS.WALCL);  // 직전 주 발표값
+    const walcl = walclSnapshot.current;
+    const walcl_prev = walclSnapshot.previous;  // 직전 주 발표값
     const tga = getTGAAnalysis();
     const onRrp = getFredData(CONFIG.FRED_IDS.ON_RRP);
 
@@ -1038,7 +1044,7 @@ function analyzeGlobalLiquidity() {
     const emFx = getEmergingMarketsFX();
 
     // WoW 계산 (v4.1: 직전 발표값 기준)
-    const walcl_wow = (walcl.value || 0) - (walcl_prev.value || 0);
+    const walcl_wow = walclSnapshot.wow;
 
     // v4.1: WoW 디버깅 로그
     Logger.log(`📊 WALCL 계산: 현재 ${walcl.value} (${walcl.date}) - 직전 ${walcl_prev.value} (${walcl_prev.date}) = WoW ${walcl_wow}`);
@@ -1053,7 +1059,9 @@ function analyzeGlobalLiquidity() {
     // === 미국 요인 ===
 
     // 1. WALCL WoW (양방향 5단계 점수)
-    if (walcl_wow > 50000) {
+    if (!Number.isFinite(walcl_wow)) {
+      Logger.log('WALCL WoW 미확인: 점수 반영 안 함');
+    } else if (walcl_wow > 50000) {
       usScore += 20;
     } else if (walcl_wow > 10000) {
       usScore += 10;
@@ -1064,7 +1072,9 @@ function analyzeGlobalLiquidity() {
     }
 
     // 2. TGA 변화 (양방향 5단계 점수)
-    if (tga.week_change < -100000) {
+    if (!Number.isFinite(tga.week_change)) {
+      Logger.log('TGA WoW 미확인: 점수 반영 안 함');
+    } else if (tga.week_change < -100000) {
       usScore += 10;
     } else if (tga.week_change < -50000) {
       usScore += 5;
@@ -1162,10 +1172,10 @@ function analyzeGlobalLiquidity() {
 
     globalSheet.getRange(2, 1, 1, 19).setValues([[
       timestamp,
-      walcl.value,
-      walcl_wow,
-      tga.current,
-      tga.week_change,
+      walcl.value ?? '',
+      walcl_wow ?? '',
+      tga.current ?? '',
+      tga.week_change ?? '',
       onRrp.value,
       dxy.value,
       dxy_change,
@@ -1226,7 +1236,7 @@ function analyzeGlobalLiquidity() {
         em: emScore
       },
       details: {
-        us: { walcl: walcl.value, walcl_wow: walcl_wow, tga: tga, onrrp: onRrp.value },
+        us: { walcl: walcl.value, walcl_wow: walcl_wow, walcl_date: walcl.date, walcl_previous_date: walcl_prev.date, tga: tga, onrrp: onRrp.value },
         dxy: { level: dxy.value, change: dxy_change, contextual: contextualDxy },
         china: china,
         japan: japan,
@@ -1253,7 +1263,7 @@ function analyzeGlobalLiquidity() {
       weights: { US: 0.45, DXY: 0.25, China: 0.05, Japan: 0.10, EM: 0.15 },  // v4.1 가중치
       componentScores: { us: 0, dxy: 0, china: 0, japan: 0, em: 0 },
       details: {
-        us: { walcl: 0, walcl_wow: 0, tga: { current: 0, week_change: 0 }, onrrp: 0 },
+        us: { walcl: null, walcl_wow: null, walcl_date: null, walcl_previous_date: null, tga: { current: null, week_change: null }, onrrp: 0 },
         dxy: { level: 0, change: 0, contextual: null },
         china: { usdcny: 0, usdcny_change: 0, fx_reserves: 0, score: 0 },  // v4.1 구조
         japan: { usdjpy: 0, jgb_10y: 0, us_jpy_spread: 0 },
@@ -1431,10 +1441,10 @@ function logGlobalHistory(analysis) {
     // 히스토리에 추가 (v4.1: 중국 데이터 구조 업데이트)
     globalHistorySheet.appendRow([
       analysis.timestamp,
-      us.walcl || 0,
-      us.walcl_wow || 0,
-      tga.current || 0,
-      tga.week_change || 0,
+      us.walcl ?? '',
+      us.walcl_wow ?? '',
+      tga.current ?? '',
+      tga.week_change ?? '',
       us.onrrp || 0,
       Number.isFinite(dxy.level) ? dxy.level : '',
       Number.isFinite(dxy.change) ? dxy.change : '',
@@ -1930,7 +1940,7 @@ function updateLiveMonitor() {
     const iorb_now = iorb.value || 0;
     const sofr_iorb_now = (sofr_now - iorb_now) * 100;
     const on_rrp_now = onRrp.value || 0;
-    const tga_now = tga.value || 0;
+    const tga_now = tga.value ?? '';
     const walcl_now = walclData.current.value;
     const srf_now = srf.amount || 0;
     const wowChange = walclData.wow;
@@ -1942,7 +1952,7 @@ function updateLiveMonitor() {
     const dataRow = 2;
     liveSheet.getRange(dataRow, 1, 1, 11).setValues([[
       date_now, sofr_now, effr_now, iorb_now, sofr_iorb_now,
-      on_rrp_now, tga_now, walcl_now, wowChange, srf_now, signal
+      on_rrp_now, tga_now, walcl_now, wowChange ?? '', srf_now, signal
     ]]);
     
     // History에 타임스탬프와 함께 기록 (누적)
@@ -1956,7 +1966,7 @@ function updateLiveMonitor() {
       on_rrp_now, 
       tga_now, 
       walcl_now, 
-      wowChange, 
+      wowChange ?? '', 
       srf_now, 
       signal
     ]);
@@ -1978,49 +1988,8 @@ function updateLiveMonitor() {
 }
 
 function getWALCLWithHistory() {
-  try {
-    const url = `${CONFIG.FRED_BASE}?id=WALCL`;
-    const response = UrlFetchApp.fetch(url, {
-      muteHttpExceptions: true,
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      timeout: 15000
-    });
-    
-    if (response.getResponseCode() !== 200) {
-      throw new Error(`FRED API 오류: ${response.getResponseCode()}`);
-    }
-    
-    const csv = response.getContentText();
-    const lines = csv.trim().split('\n');
-    
-    if (lines.length < 3) {
-      throw new Error('WALCL 데이터가 충분하지 않습니다');
-    }
-    
-    const lastLine = lines[lines.length - 1];
-    const secondLastLine = lines[lines.length - 2];
-    
-    const [currentDate, currentValue] = lastLine.split(',');
-    const [weekAgoDate, weekAgoValue] = secondLastLine.split(',');
-    
-    const result = {
-      current: {
-        date: currentDate.trim(),
-        value: parseFloat(currentValue.trim())
-      },
-      weekAgo: {
-        date: weekAgoDate.trim(),
-        value: parseFloat(weekAgoValue.trim())
-      },
-      wow: parseFloat(currentValue.trim()) - parseFloat(weekAgoValue.trim())
-    };
-    
-    return result;
-    
-  } catch (e) {
-    Logger.log(`❌ WALCL 히스토리 수집 실패: ${e.message}`);
-    return null;
-  }
+  const snapshot = getWeeklyFredSnapshot(CONFIG.FRED_IDS.WALCL);
+  return snapshot.current.date ? { current: snapshot.current, weekAgo: snapshot.previous, wow: snapshot.wow } : null;
 }
 
 function determineSignal(sofr_iorb, on_rrp, wowChange, walcl) {
@@ -2431,6 +2400,8 @@ function sendGlobalAlert(alerts, analysis, comparison) {
         <p><strong>시간:</strong> ${timestamp}</p>
         <p><strong>유동성 점수:</strong> ${analysis.score} / 100${scoreChange}</p>
         <p><strong>신호:</strong> ${analysis.signal}</p>
+        ${!Number.isFinite(analysis.details.us.walcl_wow) || !Number.isFinite(analysis.details.us.tga.week_change)
+          ? '<p>주간 관측값이 없는 항목은 점수에 반영하지 않았습니다.</p>' : ''}
 
         <h3>📊 주요 지표</h3>
         <table style="border-collapse: collapse; width: 100%; background: white;">
@@ -2440,11 +2411,11 @@ function sendGlobalAlert(alerts, analysis, comparison) {
           </tr>
           <tr>
             <td style="border: 1px solid #ddd; padding: 8px;"><strong>WALCL WoW:</strong></td>
-            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.us.walcl_wow.toFixed(0)}M$</td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${formatWeeklyFredMove(analysis.details.us.walcl_wow, analysis.details.us.walcl_date, analysis.details.us.walcl_previous_date)}</td>
           </tr>
           <tr>
             <td style="border: 1px solid #ddd; padding: 8px;"><strong>TGA WoW:</strong></td>
-            <td style="border: 1px solid #ddd; padding: 8px;">${analysis.details.us.tga.week_change.toFixed(0)}M$</td>
+            <td style="border: 1px solid #ddd; padding: 8px;">${formatWeeklyFredMove(analysis.details.us.tga.week_change, analysis.details.us.tga.observation_date, analysis.details.us.tga.previous_date)}</td>
           </tr>
           <tr>
             <td style="border: 1px solid #ddd; padding: 8px;"><strong>ON RRP:</strong></td>
@@ -2548,9 +2519,9 @@ function checkTGADetail() {
   const tga = getTGAAnalysis();
   SpreadsheetApp.getUi().alert(
     `💵 TGA (재무부 계좌) 분석\n\n` +
-    `현재 잔고: $${(tga.current/1000).toFixed(0)}B\n` +
-    `주간 변화: $${(tga.week_change/1000).toFixed(0)}B\n` +
-    `월간 변화: $${(tga.month_change/1000).toFixed(0)}B\n\n` +
+    `현재 잔고: ${formatBalance(tga.current, 1000, "B$", 0)}\n` +
+    `주간 변화: ${formatBalance(tga.week_change, 1000, "B$", 0)}\n` +
+    `월간 변화: ${formatBalance(tga.month_change, 1000, "B$", 0)}\n\n` +
     `유동성 영향: ${tga.liquidity_impact}\n` +
     `부채한도 리스크: ${tga.debt_ceiling_risk}`
   );
@@ -2595,7 +2566,7 @@ function checkFedPolicy() {
       `신호: ${fedPolicy.overallSignal}\n\n` +
       `--- QT/QE 상태 ---\n` +
       `상태: ${qt.status} (${qt.signal})\n` +
-      `월간 WALCL 변화: ${(qt.monthChange/1000).toFixed(0)}B$\n` +
+      `월간 WALCL 변화: ${formatBalance(qt.monthChange, 1000, "B$", 0, true)}\n` +
       `점수 기여: ${qt.score > 0 ? '+' : ''}${qt.score}\n\n` +
       `--- 금리 사이클 ---\n` +
       `사이클: ${rate.cycle} (${rate.signal})\n` +
@@ -3055,9 +3026,9 @@ function createGlobalDashboard() {
           </tr>
           <tr>
             <td>WALCL (연준자산)</td>
-            <td>${(analysis.details.us.walcl/1000000).toFixed(2)}T</td>
-            <td>${analysis.details.us.walcl_wow > 0 ? '+' : ''}${(analysis.details.us.walcl_wow/1000).toFixed(1)}B</td>
-            <td>${analysis.details.us.walcl_wow > 0 ? '✅' : '⚠️'}</td>
+            <td>${formatBalance(analysis.details.us.walcl, 1000000, "T", 2)}</td>
+            <td>${formatBalance(analysis.details.us.walcl_wow, 1000, "B", 1, true)}</td>
+            <td>${!Number.isFinite(analysis.details.us.walcl_wow) ? '미확인' : analysis.details.us.walcl_wow > 0 ? '✅' : '⚠️'}</td>
           </tr>
           <tr>
             <td>USD/CNY (위안화)</td>
@@ -3086,7 +3057,7 @@ function createGlobalDashboard() {
           ${(analysis.details.china.score || 0) < 0 ? '<li>⚠️ 중국 유동성 악화 (' + analysis.details.china.liquidity_signal + ')</li>' : ''}
           ${analysis.details.japan.usdjpy > 150 ? '<li>⚠️ 엔캐리 언와인드 리스크</li>' : ''}
           ${Math.abs(analysis.details.dxy.change) > 2 ? '<li>⚠️ 달러 급변동</li>' : ''}
-          ${analysis.details.us.tga.current < 200000 ? '<li>⚠️ TGA 잔고 부족</li>' : ''}
+          ${Number.isFinite(analysis.details.us.tga.current) && analysis.details.us.tga.current < 200000 ? '<li>⚠️ TGA 잔고 부족</li>' : ''}
         </ul>
       </div>
       
